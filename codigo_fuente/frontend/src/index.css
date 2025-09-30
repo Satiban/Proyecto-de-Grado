@@ -1,0 +1,11 @@
+@import 'tailwindcss';
+/* Escala tipográfica para escritorios grandes */
+@media (min-width: 1440px) {
+  html { font-size: 17px; }  /* ~106% */
+}
+@media (min-width: 1920px) {
+  html { font-size: 18px; }  /* ~112% */
+}
+@media (min-width: 2560px) {
+  html { font-size: 20px; }  /* ~125% */
+}
