@@ -9,8 +9,8 @@ from usuarios.models import Usuario, PACIENTE_ROLE_ID  # PACIENTE_ROLE_ID = 2
 
 # ---------- Validadores ----------
 telefono_validator = RegexValidator(
-    regex=r'^\d{9,15}$',
-    message='El número debe tener entre 9 y 15 dígitos.'
+    regex=r'^\+?\d{9,15}$',
+    message='El número debe tener entre 9 y 15 dígitos (formato E.164: +593XXXXXXXXX).'
 )
 
 # Parentesco del contacto de emergencia (solo estos)
@@ -47,6 +47,8 @@ class Paciente(models.Model):
     contacto_emergencia_nom = models.CharField(max_length=100, db_column='contacto_emergencia_nom')
     contacto_emergencia_cel = models.CharField(max_length=15, validators=[telefono_validator], db_column='contacto_emergencia_cel')
     contacto_emergencia_par = models.CharField(max_length=50, choices=CONTACTO_PARENTESCO_CHOICES, db_column='contacto_emergencia_par')
+    contacto_emergencia_email = models.EmailField(blank=True, null=True, db_column='contacto_emergencia_email',
+                                                    help_text='Email del contacto de emergencia (obligatorio para menores sin email propio)')
 
     created_at = models.DateTimeField(auto_now_add=True, db_column='created_at')
     updated_at = models.DateTimeField(auto_now=True, db_column='updated_at')
@@ -60,13 +62,14 @@ class Paciente(models.Model):
         nombre = f"{u.primer_nombre} {u.primer_apellido}" if u else "—"
         return f'Paciente {self.id_paciente} - {nombre}'
 
-    def clean(self):
-        # Solo usuarios con rol PACIENTE (id_rol = 2)
-        if self.id_usuario_id and getattr(self.id_usuario, 'id_rol_id', None) != PACIENTE_ROLE_ID:
-            raise ValidationError("El id_usuario asociado debe tener rol 'paciente' (id_rol=2).")
-
     def save(self, *args, **kwargs):
-        self.clean()
+        # Normalizar celular del contacto de emergencia a E.164
+        if self.contacto_emergencia_cel:
+            from usuarios.utils import normalizar_celular_ecuador
+            celular_normalizado = normalizar_celular_ecuador(self.contacto_emergencia_cel)
+            if celular_normalizado:
+                self.contacto_emergencia_cel = celular_normalizado
+        
         super().save(*args, **kwargs)
 
 
@@ -82,7 +85,6 @@ class Antecedente(models.Model):
         db_table = 'antecedente'
         ordering = ['id_antecedente']
         constraints = [
-            # Unicidad case-insensitive (PostgreSQL)
             UniqueConstraint(Lower('nombre'), name='uq_antecedente_nombre_ci'),
         ]
 
@@ -93,13 +95,9 @@ class Antecedente(models.Model):
 # ---------- PacienteAntecedente ----------
 class PacienteAntecedente(models.Model):
     id_paciente_antecedente = models.AutoField(primary_key=True, db_column='id_paciente_antecedente')
-
     id_paciente = models.ForeignKey(Paciente, on_delete=models.CASCADE, db_column='id_paciente', related_name='antecedentes')
     id_antecedente = models.ForeignKey(Antecedente, on_delete=models.CASCADE, db_column='id_antecedente', related_name='pacientes')
-
-    # Solo: abuelos/padres/hermanos/propio
     relacion_familiar = models.CharField(max_length=20, choices=RELACION_FAM_CHOICES, db_column='relacion_familiar')
-
     created_at = models.DateTimeField(auto_now_add=True, db_column='created_at')
     updated_at = models.DateTimeField(auto_now=True, db_column='updated_at')
 
@@ -107,7 +105,6 @@ class PacienteAntecedente(models.Model):
         db_table = 'paciente_antecedente'
         ordering = ['id_paciente_antecedente']
         constraints = [
-            # Evitar duplicados reales (pero permitir mismo antecedente con distinta relación)
             UniqueConstraint(fields=['id_paciente', 'id_antecedente', 'relacion_familiar'], name='uq_paciente_antecedente_rel'),
         ]
 

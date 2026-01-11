@@ -34,21 +34,9 @@ NOMBRE_A_DIA = {
 }
 
 def normalizar_dia_semana(val) -> int:
-    """
-    Devuelve siempre Lunes=0..Domingo=6.
-
-    Acepta:
-      - int 0..6 -> ya canónico (Lunes=0)
-      - int 1..7 -> ISO weekday (1=Lunes .. 7=Domingo) => (n-1)%7
-      - str dígito "0".."6" o "1".."7"
-      - str nombre ('martes', 'Mon', 'sunday', etc.)
-
-    Si no puede normalizar, lanza ValueError.
-    """
     if val is None:
         raise ValueError("Día de semana vacío.")
 
-    # num?
     if isinstance(val, int):
         if 0 <= val <= 6:
             return val
@@ -78,7 +66,6 @@ def normalizar_dia_semana(val) -> int:
 class Odontologo(models.Model):
     id_odontologo = models.AutoField(primary_key=True, db_column='id_odontologo')
 
-    # PROTECT: no borres el Usuario por cascada; desactívalo con is_active
     id_usuario = models.OneToOneField(
         Usuario,
         on_delete=models.PROTECT,
@@ -86,7 +73,6 @@ class Odontologo(models.Model):
         related_name='odontologo',
     )
 
-    # Si borran el consultorio por defecto, que quede en NULL (no borres al odontólogo)
     id_consultorio_defecto = models.ForeignKey(
         'citas.Consultorio',
         on_delete=models.SET_NULL,
@@ -95,6 +81,8 @@ class Odontologo(models.Model):
         blank=True,
         related_name='odontologos_por_defecto',
     )
+
+    activo = models.BooleanField(default=True, db_column='activo')
 
     created_at = models.DateTimeField(auto_now_add=True, db_column='created_at')
     updated_at = models.DateTimeField(auto_now=True, db_column='updated_at')
@@ -107,20 +95,39 @@ class Odontologo(models.Model):
         u = self.id_usuario
         return f'{u.primer_nombre} {u.primer_apellido}' if u else f'Odontólogo {self.id_odontologo}'
 
-    def clean(self):
-        # Solo usuarios con rol odontólogo (id_rol = 3)
-        if self.id_usuario_id and getattr(self.id_usuario, 'id_rol_id', None) != ODONTOLOGO_ROLE_ID:
-            raise ValidationError("El id_usuario asociado debe tener rol 'odontólogo' (id_rol=3).")
-
     def save(self, *args, **kwargs):
-        self.clean()
+        from usuarios.models import Rol, PACIENTE_ROLE_ID
+        from pacientes.models import Paciente
+        
+        # Guardar primero para tener la instancia creada
         super().save(*args, **kwargs)
+        
+        # Ajustar rol del usuario según estado activo
+        usuario = self.id_usuario
+        
+        if self.activo:
+            # Odontólogo activo debe tener rol ODONTOLOGO
+            if usuario.id_rol_id != ODONTOLOGO_ROLE_ID:
+                rol_odo = Rol.objects.get(id_rol=ODONTOLOGO_ROLE_ID)
+                usuario.id_rol = rol_odo
+                usuario.save(update_fields=['id_rol'])
+        else:
+            # Odontólogo inactivo verificar si tiene datos de paciente
+            try:
+                Paciente.objects.get(id_usuario=usuario)
+                # Tiene datos de paciente cambiar rol a PACIENTE
+                if usuario.id_rol_id != PACIENTE_ROLE_ID:
+                    rol_paciente = Rol.objects.get(id_rol=PACIENTE_ROLE_ID)
+                    usuario.id_rol = rol_paciente
+                    usuario.save(update_fields=['id_rol'])
+            except Paciente.DoesNotExist:
+                # No tiene datos de paciente mantener rol actual
+                pass
 
 
 # ---------------- Especialidad ----------------
 class Especialidad(models.Model):
     id_especialidad = models.AutoField(primary_key=True, db_column='id_especialidad')
-    # Unicidad case-insensitive (quitamos unique=True y usamos constraint)
     nombre = models.CharField(max_length=100, db_column='nombre')
 
     created_at = models.DateTimeField(auto_now_add=True, db_column='created_at')
@@ -172,8 +179,6 @@ class OdontologoEspecialidad(models.Model):
 # ---------------- BloqueoDia ----------------
 class BloqueoDia(models.Model):
     id_bloqueo = models.AutoField(primary_key=True, db_column='id_bloqueo')
-
-    # AHORA nullable para permitir bloqueos GLOBALes (sin odontólogo)
     id_odontologo = models.ForeignKey(
         Odontologo,
         on_delete=models.CASCADE,
@@ -258,19 +263,16 @@ class OdontologoHorario(models.Model):
     def __str__(self):
         return f'{self.get_dia_semana_display()} {self.hora_inicio} - {self.hora_fin}'
 
-    # Evitar solapes para el mismo odontólogo y día (a nivel modelo)
     def clean(self):
         if not self.id_odontologo_id:
             return
         qs = OdontologoHorario.objects.filter(
             id_odontologo=self.id_odontologo,
             dia_semana=self.dia_semana,
-            vigente=True  # solo chocamos con horarios vigentes
+            vigente=True 
         )
         if self.pk:
             qs = qs.exclude(pk=self.pk)
-
-        # solape si: inicio < fin_existente y fin > inicio_existente
         overlap = qs.filter(
             hora_inicio__lt=self.hora_fin,
             hora_fin__gt=self.hora_inicio,

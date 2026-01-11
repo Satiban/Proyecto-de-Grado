@@ -17,27 +17,14 @@ import { api } from "../../api/axios";
 
 // ---------- Tipos planos que renderiza la tabla ----------
 type OdontoFlat = {
-  id_odontologo: string;
-  cedula: string;
-  primer_nombre: string;
-  segundo_nombre?: string | null;
-  primer_apellido: string;
-  segundo_apellido?: string | null;
-  sexo: string;
-  activo: boolean;
+  id_odontologo: number;
+  nombreCompleto: string;
+  cedula: string | null;
+  sexo: string | null;
+  is_active: boolean; // Estado del Usuario
+  odontologo_activo: boolean; // Estado del Odontólogo
   especialidades: string[];
 };
-
-// Normaliza truthy para campos tipo "estado", "activo", etc.
-function isTrue(v: unknown): boolean {
-  if (typeof v === "boolean") return v;
-  if (typeof v === "number") return v !== 0;
-  if (typeof v === "string")
-    return ["1", "true", "activo", "active", "act", "yes", "si", "sí"].includes(
-      v.trim().toLowerCase()
-    );
-  return false;
-}
 
 // DRF: helper para traer todas las páginas
 async function fetchAll<T = any>(
@@ -112,98 +99,8 @@ const Odontologos = () => {
     setLoading(true);
     setErr("");
     try {
-      // 1) Lista base de odontólogos
-      const base = await fetchAll<any>("/odontologos/");
-
-      // 2) Catálogo de especialidades: id -> nombre
-      const espCat = await fetchAll<any>("/especialidades/");
-      const espMap = new Map<number, string>();
-      for (const e of espCat) {
-        if (e?.id_especialidad != null)
-          espMap.set(Number(e.id_especialidad), e.nombre);
-      }
-
-      // 3) TODAS las relaciones odontólogo-especialidad
-      const rels = await fetchAll<any>("/odontologo-especialidades/");
-
-      // 4) Agrupar por id_odontologo => [nombres especialidad] SOLO activas
-      const espPorOdonto = new Map<string, string[]>();
-      for (const r of rels) {
-        const estadoRel =
-          r?.estado ?? r?.activo ?? r?.is_active ?? r?.vigente ?? r?.enabled;
-        if (!isTrue(estadoRel)) continue;
-
-        const idO = String(r?.id_odontologo ?? r?.odontologo ?? r?.id ?? "");
-        if (!idO) continue;
-
-        let nombre = r?.especialidad?.nombre as string | undefined;
-        if (!nombre && r?.id_especialidad != null) {
-          nombre = espMap.get(Number(r.id_especialidad));
-        }
-        if (!nombre && typeof r?.nombre === "string") nombre = r.nombre;
-        if (!nombre) continue;
-
-        const arr = espPorOdonto.get(idO) ?? [];
-        if (!arr.includes(nombre)) arr.push(nombre);
-        espPorOdonto.set(idO, arr);
-      }
-
-      // 5) Enriquecer cada fila con datos del usuario
-      const planos: OdontoFlat[] = await Promise.all(
-        base.map(async (o: any) => {
-          const id_odontologo = String(o.id_odontologo ?? o.id ?? o.pk ?? "");
-          const idUsuario =
-            o.id_usuario ?? o.usuario?.id_usuario ?? o.usuario_id ?? o.usuario;
-
-          let uDet: any = null;
-          const missingKeyFields =
-            !o.cedula || !o.sexo || !(o.nombres && o.apellidos);
-          if (idUsuario != null && missingKeyFields) {
-            try {
-              const { data: u } = await api.get(`/usuarios/${idUsuario}/`);
-              uDet = u;
-            } catch {
-              uDet = null;
-            }
-          }
-
-          const cedula = String(o.cedula ?? uDet?.cedula ?? "");
-          const sexoRaw = o.sexo ?? uDet?.sexo ?? "";
-          const sexo =
-            String(sexoRaw).toUpperCase() === "M"
-              ? "Masculino"
-              : String(sexoRaw).toUpperCase() === "F"
-              ? "Femenino"
-              : String(sexoRaw || "");
-          const activo =
-            (o.estado !== undefined
-              ? o.estado
-              : uDet?.estado ?? uDet?.is_active) ?? false;
-
-          const primer_nombre = o.primer_nombre ?? uDet?.primer_nombre ?? "";
-          const segundo_nombre = o.segundo_nombre ?? uDet?.segundo_nombre ?? "";
-          const primer_apellido =
-            o.primer_apellido ?? uDet?.primer_apellido ?? "";
-          const segundo_apellido =
-            o.segundo_apellido ?? uDet?.segundo_apellido ?? "";
-
-          const especialidades = espPorOdonto.get(id_odontologo) ?? [];
-
-          return {
-            id_odontologo,
-            cedula,
-            primer_nombre,
-            segundo_nombre,
-            primer_apellido,
-            segundo_apellido,
-            sexo,
-            activo: Boolean(activo),
-            especialidades,
-          };
-        })
-      );
-
-      setOdontologos(planos);
+      const base = await fetchAll<OdontoFlat>("/odontologos/");
+      setOdontologos(base);
     } catch (e: any) {
       console.error("Error cargando odontólogos:", e);
       setErr(
@@ -228,33 +125,19 @@ const Odontologos = () => {
 
   const filtrados = useMemo(() => {
     const list = odontologos.filter((o) => {
-      const fullName = [
-        o.primer_nombre,
-        o.segundo_nombre,
-        o.primer_apellido,
-        o.segundo_apellido,
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
+      const fullName = (o.nombreCompleto || "").toLowerCase();
 
       const okNom = !fNombre || fullName.includes(fNombre.toLowerCase());
-      const okCed = !fCedula || o.cedula.includes(fCedula);
+      const okCed = !fCedula || (o.cedula ?? "").includes(fCedula);
       const okEsp = !fEsp || o.especialidades.includes(fEsp);
 
       return okNom && okCed && okEsp;
     });
 
-    // ordenar por apellido
+    // ordenar por apellido → usamos nombreCompleto y tomamos últimas dos palabras como apellidos
     return list.sort((a, b) => {
-      const apA = [a.primer_apellido, a.segundo_apellido]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-      const apB = [b.primer_apellido, b.segundo_apellido]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
+      const apA = a.nombreCompleto.split(" ").slice(-2).join(" ").toLowerCase();
+      const apB = b.nombreCompleto.split(" ").slice(-2).join(" ").toLowerCase();
       return apA.localeCompare(apB);
     });
   }, [odontologos, fNombre, fCedula, fEsp]);
@@ -374,41 +257,43 @@ const Odontologos = () => {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200">
-            {currentRows.map((o) => {
-              const nombres = [o.primer_nombre, o.segundo_nombre]
-                .filter(Boolean)
-                .join(" ");
-              const apellidos = [o.primer_apellido, o.segundo_apellido]
-                .filter(Boolean)
-                .join(" ");
-              return (
-                <tr key={o.id_odontologo} className="hover:bg-gray-50">
-                  <td className="px-4 py-3">{o.cedula || "—"}</td>
-                  <td className="px-4 py-3">{apellidos || "—"}</td>
-                  <td className="px-4 py-3">{nombres || "—"}</td>
-                  <td className="px-4 py-3">{o.sexo || "—"}</td>
-                  <td className="px-4 py-3">
-                    <span
-                      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
-                        o.activo
-                          ? "bg-green-100 text-green-700"
-                          : "bg-gray-100 text-gray-700"
-                      }`}
-                    >
-                      {o.activo ? "Activo" : "Inactivo"}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">
-                    {o.especialidades.length
-                      ? o.especialidades.join(", ")
-                      : "—"}
-                  </td>
-                  <td className="px-4 py-3">
-                    <AccionesOdontologo id={o.id_odontologo} />
-                  </td>
-                </tr>
-              );
-            })}
+            {currentRows.map((o) => (
+              <tr key={o.id_odontologo} className="hover:bg-gray-50">
+                <td className="px-4 py-3">{o.cedula || "—"}</td>
+                <td className="px-4 py-3">
+                  {/* Apellidos: toma del nombre completo */}
+                  {o.nombreCompleto.split(" ").slice(-2).join(" ") || "—"}
+                </td>
+                <td className="px-4 py-3">
+                  {/* Nombres: toma del nombre completo */}
+                  {o.nombreCompleto.split(" ").slice(0, 2).join(" ") || "—"}
+                </td>
+                <td className="px-4 py-3">
+                  {o.sexo === "M"
+                    ? "Masculino"
+                    : o.sexo === "F"
+                    ? "Femenino"
+                    : "—"}
+                </td>
+                <td className="px-4 py-3">
+                  <span
+                    className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+                      o.odontologo_activo
+                        ? "bg-green-100 text-green-700"
+                        : "bg-gray-100 text-gray-700"
+                    }`}
+                  >
+                    {o.odontologo_activo ? "Activo" : "Inactivo"}
+                  </span>
+                </td>
+                <td className="px-4 py-3">
+                  {o.especialidades.length ? o.especialidades.join(", ") : "—"}
+                </td>
+                <td className="px-4 py-3">
+                  <AccionesOdontologo id={String(o.id_odontologo)} />
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
 

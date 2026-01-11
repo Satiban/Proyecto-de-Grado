@@ -1,11 +1,10 @@
 // src/pages/admin/OdontologosNuevo.tsx
 import React, { useEffect, useRef, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import axios from "axios";
 import { api } from "../../api/axios";
 import { Loader2, Eye, EyeOff, User, ArrowLeft } from "lucide-react";
+import { useFotoPerfil } from "../../hooks/useFotoPerfil";
 
-const API = import.meta.env.VITE_API_URL || "http://localhost:8000/api/v1";
 const PRIMARY = "#0070B7";
 
 /* ===== Tipos ===== */
@@ -40,7 +39,7 @@ const DAY_LABELS = [
 const MIN_TIME = "09:00";
 const MAX_TIME = "22:00"; // 10pm
 
-// 👉 Bloque de almuerzo (no se atiende)
+// Bloque de almuerzo (no se atiende)
 const LUNCH_START = "13:00";
 const LUNCH_END = "15:00";
 
@@ -67,20 +66,24 @@ function isValidCedulaEC(ci: string) {
   const d = s % 10 === 0 ? 0 : 10 - (s % 10);
   return d === +ci[9];
 }
-// >= 18 años
+// >= 18 años y fecha no anterior a 1930
 function isAdult18(dateStr: string) {
   if (!dateStr) return false;
   const dob = new Date(dateStr + "T00:00:00");
   if (Number.isNaN(dob.getTime())) return false;
+
+  // Validar que la fecha no sea anterior a 1930
+  if (dob.getFullYear() < 1930) return false;
+
   const today = new Date();
   let years = today.getFullYear() - dob.getFullYear();
   const mDiff = today.getMonth() - dob.getMonth();
   if (mDiff < 0 || (mDiff === 0 && today.getDate() < dob.getDate())) years--;
   return years >= 18;
 }
-// Contraseña: min 6, 1 mayúscula y 1 número
+// Contraseña: min 8, 1 mayúscula y 1 número
 function isStrongPassword(pwd: string) {
-  return /^(?=.*[A-Z])(?=.*\d).{6,}$/.test(pwd);
+  return /^(?=.*[A-Z])(?=.*\d).{8,}$/.test(pwd);
 }
 // minutos desde "HH:MM"
 function toMinutes(hhmm: string) {
@@ -91,6 +94,7 @@ function toMinutes(hhmm: string) {
 
 export default function OdontologosNuevo() {
   const navigate = useNavigate();
+  const { subirFoto } = useFotoPerfil();
 
   // Stepper (4 pasos)
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
@@ -109,6 +113,9 @@ export default function OdontologosNuevo() {
   const [cedulaExists, setCedulaExists] = useState<boolean | null>(null);
   const [emailExists, setEmailExists] = useState<boolean | null>(null);
   const [celularExists, setCelularExists] = useState<boolean | null>(null);
+  const [fechaNacimientoValid, setFechaNacimientoValid] = useState<
+    boolean | null
+  >(null);
   const lastQueried = useRef<{
     cedula?: string;
     email?: string;
@@ -165,7 +172,7 @@ export default function OdontologosNuevo() {
   const pwd2 = u.password2 ?? "";
 
   // Criterios
-  const pwdHasMin = pwd.length >= 6;
+  const pwdHasMin = pwd.length >= 8;
   const pwdHasUpper = /[A-Z]/.test(pwd);
   const pwdHasDigit = /\d/.test(pwd);
   const pwdStrong = pwdHasMin && pwdHasUpper && pwdHasDigit;
@@ -252,6 +259,7 @@ export default function OdontologosNuevo() {
       if (name === "cedula") setCedulaExists(null);
       if (name === "email") setEmailExists(null);
       if (name === "celular") setCelularExists(null);
+      if (name === "fecha_nacimiento") setFechaNacimientoValid(null);
 
       // --- feedback en vivo de contraseña ---
       if (name === "password") {
@@ -262,7 +270,7 @@ export default function OdontologosNuevo() {
               ? undefined
               : isStrongPassword(value)
               ? undefined
-              : "Mín. 6 car., al menos 1 mayúscula y 1 número",
+              : "Mín. 8 car., al menos 1 mayúscula y 1 número",
           // si ya hay password2, validar coincidencia también
           password2:
             u.password2 && value !== u.password2 ? "No coincide" : undefined,
@@ -320,7 +328,7 @@ export default function OdontologosNuevo() {
       if (params.email) setCheckingEmail(true);
       if (params.celular) setCheckingCelular(true);
 
-      const { data } = await axios.get(`${API}/usuarios/verificar/`, {
+      const { data } = await api.get(`/usuarios/verificar/`, {
         params,
       });
 
@@ -450,8 +458,14 @@ export default function OdontologosNuevo() {
     if (celularExists) e.celular = "Celular ya registrado";
 
     if (!u.fecha_nacimiento) e.fecha_nacimiento = "Seleccione la fecha";
-    else if (!isAdult18(u.fecha_nacimiento))
-      e.fecha_nacimiento = "Debe ser mayor de 18 años";
+    else if (!isAdult18(u.fecha_nacimiento)) {
+      const dob = new Date(u.fecha_nacimiento + "T00:00:00");
+      if (dob.getFullYear() < 1930) {
+        e.fecha_nacimiento = "La fecha no puede ser anterior a 1930";
+      } else {
+        e.fecha_nacimiento = "Debe ser mayor de 18 años";
+      }
+    }
 
     if (!["M", "F"].includes(u.sexo)) e.sexo = "Seleccione el sexo";
     if (!u.tipo_sangre) e.tipo_sangre = "Seleccione el tipo de sangre";
@@ -460,7 +474,7 @@ export default function OdontologosNuevo() {
     if (emailExists) e.email = "Correo ya registrado";
 
     if (!isStrongPassword(u.password))
-      e.password = "Mín. 6 car., al menos 1 mayúscula y 1 número";
+      e.password = "Mín. 8 car., al menos 1 mayúscula y 1 número";
     if (u.password !== u.password2) e.password2 = "No coincide";
 
     setErrors(e);
@@ -504,8 +518,6 @@ export default function OdontologosNuevo() {
 
       if (outStart) e[`dia_${dia}_inicio`] = `Inicio mínimo ${MIN_TIME}`;
       if (outEnd) e[`dia_${dia}_fin`] = `Fin máximo ${MAX_TIME}`;
-
-      // 👉 Si alguna hora está fuera del horario laboral total, mensaje genérico
       if (outStart || outEnd) {
         e[
           `dia_${dia}_rango`
@@ -515,7 +527,6 @@ export default function OdontologosNuevo() {
         const minFin = toMinutes(cfg.fin);
 
         if (!Number.isNaN(minIni) && !Number.isNaN(minFin)) {
-          // ✅ Nueva regla: solo inicio/fin dentro del almuerzo (13:00–15:00) es inválido.
           const startInLunch = minIni >= lunchStartMin && minIni < lunchEndMin;
           const endInLunch = minFin > lunchStartMin && minFin <= lunchEndMin;
 
@@ -580,13 +591,17 @@ export default function OdontologosNuevo() {
       Object.entries(payloadUsuario).forEach(([k, v]) =>
         fd.append(k, String(v))
       );
-      fd.append("activo", "true"); // activar usuario al crear
-      if (foto) fd.append("foto", foto);
+      fd.append("activo", "true");
 
       const usrRes = await api.post(`/usuarios/`, fd, {
         headers: { "Content-Type": "multipart/form-data" },
       });
       const id_usuario = usrRes.data.id_usuario;
+
+      // === SUBIR FOTO (si eligió una) ===
+      if (foto) {
+        await subirFoto(id_usuario, foto);
+      }
 
       // 2) Armar especialidades_detalle
       const especialidades_detalle = idsEspecialidades.map((id) => ({
@@ -607,10 +622,7 @@ export default function OdontologosNuevo() {
       for (let idx = 0; idx < 7; idx++) {
         const cfg = diasTrabajo[idx];
         if (!cfg?.enabled) continue;
-
-        // ✅ mapeo correcto para tu BD
         const dia_semana = idx; // Lunes=0 … Domingo=6
-
         horariosPayload.push({
           dia_semana,
           hora_inicio: cfg.inicio, // "HH:MM"
@@ -895,12 +907,75 @@ export default function OdontologosNuevo() {
                   type="date"
                   name="fecha_nacimiento"
                   value={u.fecha_nacimiento}
-                  onChange={onChange(setU)}
+                  onChange={(e) => {
+                    onChange(setU)(e);
+                    const dateStr = e.target.value;
+                    if (!dateStr) {
+                      setFechaNacimientoValid(null);
+                      return;
+                    }
+                    // Validar en tiempo real
+                    const dob = new Date(dateStr + "T00:00:00");
+                    if (Number.isNaN(dob.getTime())) {
+                      setFechaNacimientoValid(false);
+                      setErrors((prev) => ({
+                        ...prev,
+                        fecha_nacimiento: "Fecha inválida",
+                      }));
+                      return;
+                    }
+                    if (dob.getFullYear() < 1930) {
+                      setFechaNacimientoValid(false);
+                      setErrors((prev) => ({
+                        ...prev,
+                        fecha_nacimiento:
+                          "La fecha no puede ser anterior a 1930",
+                      }));
+                      return;
+                    }
+                    const today = new Date();
+                    let years = today.getFullYear() - dob.getFullYear();
+                    const mDiff = today.getMonth() - dob.getMonth();
+                    if (
+                      mDiff < 0 ||
+                      (mDiff === 0 && today.getDate() < dob.getDate())
+                    )
+                      years--;
+                    if (years < 18) {
+                      setFechaNacimientoValid(false);
+                      setErrors((prev) => ({
+                        ...prev,
+                        fecha_nacimiento: "Debe ser mayor de 18 años",
+                      }));
+                      return;
+                    }
+                    setFechaNacimientoValid(true);
+                    setErrors((prev) => ({
+                      ...prev,
+                      fecha_nacimiento: undefined,
+                    }));
+                  }}
+                  min="1930-01-01"
+                  max={
+                    new Date(
+                      new Date().setFullYear(new Date().getFullYear() - 18)
+                    )
+                      .toISOString()
+                      .split("T")[0]
+                  }
                   className={inputClass("fecha_nacimiento")}
                 />
                 {errors.fecha_nacimiento && (
                   <p className="text-red-600 text-sm">
                     {errors.fecha_nacimiento}
+                  </p>
+                )}
+                {!errors.fecha_nacimiento && fechaNacimientoValid === true && (
+                  <p className="text-xs text-green-600 mt-1">Fecha válida</p>
+                )}
+                {!errors.fecha_nacimiento && !fechaNacimientoValid && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Mínimo 18 años (desde 1930)
                   </p>
                 )}
               </div>
@@ -1018,7 +1093,7 @@ export default function OdontologosNuevo() {
                 {/* Criterios en vivo */}
                 <ul className="mt-2 text-xs space-y-1">
                   <li className={hintColor(pwdHasMin, pwdTouched, pwd)}>
-                    • Mínimo 6 caracteres
+                    • Mínimo 8 caracteres
                   </li>
                   <li className={hintColor(pwdHasUpper, pwdTouched, pwd)}>
                     • Al menos 1 mayúscula (A–Z)

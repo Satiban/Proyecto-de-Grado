@@ -13,7 +13,7 @@ import {
   LogOut,
   User,
 } from "lucide-react";
-import logoUrl from "../assets/oralflow-logo.png";
+import logoUrl from "../assets/belladent-logo4.png";
 import OdontologoIcon from "../components/OdontologoIcon";
 
 function cx(...a: Array<string | false | null | undefined>) {
@@ -71,8 +71,8 @@ const OdontologoLayout: React.FC = () => {
     <div className="min-h-screen bg-gray-100">
       {/* Topbar */}
       <header className="sticky top-0 z-40 bg-white shadow-sm">
-        <div className="w-full px-4 sm:px-6 lg:px-8 xl:px-10 2xl:px-12">
-          <div className="h-16 flex items-center justify-between">
+        <div className="w-full px-1 sm:px-1 lg:px-1 xl:px-1 2xl:px-4">
+          <div className="h-17 flex items-center justify-between">
             {/* Izquierda */}
             <div className="flex items-center gap-3">
               <button
@@ -85,8 +85,8 @@ const OdontologoLayout: React.FC = () => {
 
               <img
                 src={logoUrl}
-                alt="OralFlow"
-                className="h-12 w-auto cursor-pointer"
+                alt="Bella Dent"
+                className="h-14 w-auto cursor-pointer"
                 onClick={() => navigate("/odontologo")}
               />
             </div>

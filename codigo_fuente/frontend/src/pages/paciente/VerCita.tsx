@@ -8,7 +8,36 @@ import {
   Stethoscope,
   Building2,
   FileText,
+  Banknote,
+  Download,
+  Info,
+  ClipboardList,
 } from "lucide-react";
+
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000/api/v1";
+
+function buildMediaURL(pathOrUrl?: string | null): string | null {
+  if (!pathOrUrl) return null;
+  if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
+
+  // quitar /api/v1 de la base para apuntar al host del backend
+  const base = API_BASE.endsWith("/api/v1")
+    ? API_BASE.replace(/\/api\/v1\/?$/, "")
+    : API_BASE;
+
+  return `${base}${pathOrUrl.startsWith("/") ? pathOrUrl : `/${pathOrUrl}`}`;
+}
+
+function filenameFromUrl(u: string): string {
+  try {
+    const url = new URL(u);
+    const last = url.pathname.split("/").filter(Boolean).pop() || "comprobante";
+    return decodeURIComponent(last);
+  } catch {
+    const last = (u || "").split("/").filter(Boolean).pop() || "comprobante";
+    return decodeURIComponent(last);
+  }
+}
 
 type Estado = "pendiente" | "confirmada" | "cancelada" | "realizada";
 
@@ -22,6 +51,17 @@ type Cita = {
   id_odontologo: number;
   odontologo_nombre?: string | null;
   consultorio?: { id_consultorio: number; numero?: string | null; nombre?: string | null } | null;
+  pago?: {
+    id_pago_cita: number;
+    monto: string;
+    metodo_pago: string;
+    fecha_pago: string;
+    observacion?: string | null;
+    comprobante?: string | null;
+    estado_pago: "pendiente" | "pagado" | "reembolsado";
+    motivo_reembolso?: string | null;
+    reembolsado_en?: string | null;
+  } | null;
 };
 
 type FichaMedica = {
@@ -74,7 +114,6 @@ function EstadoBadge({ estado }: { estado: Estado }) {
 }
 
 export default function VerCitaPaciente() {
-  // Ruta sugerida: /paciente/mis-citas/ver/:id
   const { id } = useParams();
   const navigate = useNavigate();
   const idCita = useMemo(() => Number(id), [id]);
@@ -84,6 +123,7 @@ export default function VerCitaPaciente() {
   const [ficha, setFicha] = useState<FichaMedica | null>(null);
   const [adjuntos, setAdjuntos] = useState<ArchivoAdjunto[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [pago, setPago] = useState<any | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -96,6 +136,9 @@ export default function VerCitaPaciente() {
         if (!alive) return;
         const citaData: Cita = c.data;
         setCita(citaData);
+
+        // Extraer pago directamente de la cita
+        setPago((citaData as any).pago ?? null);
 
         // 2) Ficha médica (si existe)
         const f = await api.get(`/fichas-medicas/`, { params: { id_cita: idCita, page_size: 1 } });
@@ -175,7 +218,10 @@ export default function VerCitaPaciente() {
       {/* ===== Datos de la Cita (solo lectura) ===== */}
       <div className="rounded-xl bg-white shadow-md p-4 space-y-3">
         <div className="flex items-center justify-between">
-          <h2 className="font-semibold">Datos de la cita</h2>
+          <div className="flex items-center gap-2">
+            <Info className="w-5 h-5 text-gray-700" />
+            <h2 className="font-semibold">Datos de la cita</h2>
+          </div>
           <EstadoBadge estado={cita.estado} />
         </div>
 
@@ -228,7 +274,10 @@ export default function VerCitaPaciente() {
 
       {/* ===== Ficha médica (solo lectura) ===== */}
       <div className="rounded-xl bg-white shadow-md p-4 space-y-3">
-        <h2 className="font-semibold">Ficha médica</h2>
+        <div className="flex items-center gap-2">
+          <ClipboardList className="w-5 h-5 text-gray-700" />
+          <h2 className="font-semibold">Ficha médica</h2>
+        </div>
 
         {!ficha ? (
           <div className="rounded-lg border bg-gray-50 text-gray-700 px-3 py-2 text-sm">
@@ -295,6 +344,149 @@ export default function VerCitaPaciente() {
           </Fragment>
         )}
       </div>
+
+      {/* ===== Card: Pago de la Cita (solo lectura) ===== */}
+      {cita.estado?.toLowerCase() !== "cancelada" && (
+        <div className="rounded-xl bg-white shadow-md p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <Banknote className="w-5 h-5 text-gray-700" />
+            <h2 className="font-semibold">Pago de la cita</h2>
+            <span
+              className={`text-xs px-2 py-1 rounded-full border ${
+                pago?.estado_pago === "pagado"
+                  ? "bg-emerald-100 text-emerald-800 border-emerald-200"
+                  : pago?.estado_pago === "reembolsado"
+                  ? "bg-rose-100 text-rose-800 border-rose-200"
+                  : "bg-amber-100 text-amber-800 border-amber-200"
+              }`}
+            >
+              {pago?.estado_pago
+                ? pago.estado_pago.charAt(0).toUpperCase() +
+                  pago.estado_pago.slice(1).toLowerCase()
+                : "Pendiente"}
+            </span>
+          </div>
+
+          {/* Contenido interno de la card */}
+          {!pago || !pago.id_pago_cita ? (
+            <div className="rounded-lg border bg-amber-50 text-amber-900 px-3 py-2 text-sm">
+              Aún no se ha registrado el pago de esta cita.
+            </div>
+          ) : (
+            <div className="grid md:grid-cols-2 gap-4">
+              <div className="border rounded-lg p-3">
+                <div className="text-xs text-gray-500">Monto</div>
+                <div className="font-medium">${pago.monto ?? "—"}</div>
+              </div>
+
+              <div className="border rounded-lg p-3">
+                <div className="text-xs text-gray-500">Método</div>
+                <div className="font-medium capitalize">
+                  {pago.metodo_pago ?? "—"}
+                </div>
+              </div>
+
+              <div className="border rounded-lg p-3">
+                <div className="text-xs text-gray-500">Fecha de pago</div>
+                <div className="font-medium">
+                  {pago.fecha_pago
+                    ? new Date(pago.fecha_pago).toLocaleString("es-EC")
+                    : "—"}
+                </div>
+              </div>
+
+              <div className="border rounded-lg p-3">
+                <div className="text-xs text-gray-500">Observación</div>
+                <div className="whitespace-pre-wrap">
+                  {pago.observacion || "—"}
+                </div>
+              </div>
+
+              {/* Motivo de reembolso - solo si está reembolsado */}
+              {pago.estado_pago === "reembolsado" && (
+                <>
+                  {pago.motivo_reembolso && (
+                    <div className="border rounded-lg p-3 md:col-span-2 bg-amber-50 border-amber-200">
+                      <div className="text-xs text-amber-700 font-semibold flex items-center gap-1 mb-1">
+                        <Info className="w-4 h-4" />
+                        Motivo del Reembolso
+                      </div>
+                      <div className="text-sm text-amber-900 whitespace-pre-wrap">
+                        {pago.motivo_reembolso}
+                      </div>
+                      {pago.reembolsado_en && (
+                        <div className="text-xs text-amber-600 mt-2">
+                          Reembolsado el: {new Date(pago.reembolsado_en).toLocaleString("es-EC", {
+                            dateStyle: "medium",
+                            timeStyle: "short"
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+
+              {pago.comprobante &&
+                (() => {
+                  const comprobanteURL = buildMediaURL(pago.comprobante);
+                  if (!comprobanteURL) return null;
+                  const downloadName = filenameFromUrl(comprobanteURL);
+
+                  const handleDownload = async (e: React.MouseEvent) => {
+                    e.preventDefault();
+                    try {
+                      const response = await fetch(comprobanteURL);
+                      const blob = await response.blob();
+                      const url = window.URL.createObjectURL(blob);
+                      const link = document.createElement('a');
+                      link.href = url;
+                      link.download = downloadName;
+                      document.body.appendChild(link);
+                      link.click();
+                      document.body.removeChild(link);
+                      window.URL.revokeObjectURL(url);
+                    } catch (error) {
+                      console.error('Error al descargar:', error);
+                      // Fallback: abrir en nueva pestaña
+                      window.open(comprobanteURL, '_blank');
+                    }
+                  };
+
+                  return (
+                    <div className="border rounded-lg p-3 md:col-span-2">
+                      {/* Título + botón negro a la derecha */}
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="text-xs text-gray-500">Comprobante</div>
+
+                        <button
+                          onClick={handleDownload}
+                          className="inline-flex items-center gap-2 rounded-lg bg-gray-800 text-white px-3 py-2 text-xs shadow hover:bg-black/80 transition"
+                          title="Descargar comprobante"
+                        >
+                          <Download className="w-4 h-4" />
+                          Descargar comprobante
+                        </button>
+                      </div>
+
+                      {/* Vista previa: intentamos mostrar como imagen */}
+                      <img
+                        src={comprobanteURL}
+                        alt="Comprobante"
+                        className="max-h-64 w-full rounded-lg object-contain"
+                        onError={(e) => {
+                          // Si no es imagen (p.ej. PDF), ocultamos la vista previa
+                          (e.currentTarget as HTMLImageElement).style.display =
+                            "none";
+                        }}
+                      />
+                    </div>
+                  );
+                })()}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

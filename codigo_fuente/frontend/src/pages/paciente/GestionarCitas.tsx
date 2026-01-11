@@ -20,6 +20,7 @@ import {
   AlertTriangle,
   Phone,
 } from "lucide-react";
+import { e164ToLocal } from "../../utils/phoneFormat";
 
 /* ========================= Tipos ========================= */
 type Estado = "pendiente" | "confirmada" | "cancelada" | "realizada";
@@ -41,7 +42,7 @@ type Cita = {
 
   consultorio?: { id_consultorio: number; numero?: string } | null;
 
-  // (Opcionales del backend para ventanas de acciones)
+  // Ventanas calculadas en backend (opcionales)
   confirmable_hasta?: string | null;
   reprogramable_hasta?: string | null;
   cancelable_hasta?: string | null;
@@ -62,17 +63,14 @@ type OdoOption = {
   especialidades_detalle?: { nombre: string | null; estado?: boolean }[];
 };
 
-/* ========================= Config UI (coincidir con Inicio.tsx) ========================= */
+/* ========================= Config UI ========================= */
 const BRAND = "#0070B7";
 const ACTION_BTN_BASE =
-  "inline-flex items-center justify-center gap-1.5 rounded-md text-sm font-medium text-white h-9 px-3";
+  "inline-flex items-center justify-center gap-1 rounded-md text-xs font-medium text-white h-8 px-2 whitespace-nowrap";
 const BTN_CONFIRM = "bg-green-600 hover:bg-green-700 disabled:opacity-70";
-const BTN_REPROG = "bg-[color:var(--brand)] hover:brightness-90 disabled:opacity-70";
+const BTN_REPROG =
+  "bg-[color:var(--brand)] hover:brightness-90 disabled:opacity-70";
 const BTN_CANCEL = "bg-red-600 hover:bg-red-700 disabled:opacity-70";
-
-// Ventana de confirmación: entre 24h y 12h antes
-const CONFIRM_FROM_HOURS = 24;
-const CONFIRM_UNTIL_HOURS = 12;
 
 /* ========================= Helpers ========================= */
 function isBeforeOrEqualNow(iso?: string | null) {
@@ -97,12 +95,17 @@ function formatHora(h?: string | null) {
   return m ? m[1] : h;
 }
 
-async function fetchAll<T = any>(url: string, params?: Record<string, any>): Promise<T[]> {
+async function fetchAll<T = any>(
+  url: string,
+  params?: Record<string, any>
+): Promise<T[]> {
   const out: T[] = [];
   let next: string | null = url;
   let page = 1;
   while (next) {
-    const res: AxiosResponse<any> = await api.get(next, { params: page === 1 ? params : undefined });
+    const res: AxiosResponse<any> = await api.get(next, {
+      params: page === 1 ? params : undefined,
+    });
     const data = res.data;
     if (Array.isArray(data)) {
       out.push(...(data as T[]));
@@ -116,7 +119,7 @@ async function fetchAll<T = any>(url: string, params?: Record<string, any>): Pro
   return out;
 }
 
-// === Helpers para ventana 24h–12h ===
+// === Helpers para ventana de confirmación (horas) ===
 function parseDateTimeLocal(ymd: string, hhmm?: string | null) {
   const [H, M] = (hhmm || "00:00").split(":").map((x) => parseInt(x, 10));
   const [Y, m, D] = ymd.split("-").map((x) => parseInt(x, 10));
@@ -145,7 +148,7 @@ function useToasts() {
   return { toasts, show, remove };
 }
 
-/* ========================= Modal (igual a Inicio.tsx) ========================= */
+/* ========================= Modal ========================= */
 type ModalProps = {
   open: boolean;
   title: string;
@@ -189,7 +192,9 @@ function Modal({
             onClick={onConfirm}
             disabled={!!confirming}
             className={`rounded-md px-3 py-2 text-sm font-medium text-white ${
-              confirmKind === "danger" ? "bg-red-600 hover:bg-red-700" : "bg-[color:var(--brand)] hover:brightness-95"
+              confirmKind === "danger"
+                ? "bg-red-600 hover:bg-red-700"
+                : "bg-[color:var(--brand)] hover:brightness-95"
             }`}
             style={{ ["--brand" as any]: BRAND }}
           >
@@ -214,7 +219,35 @@ export default function GestionarCitas() {
   const [cancelModalOpen, setCancelModalOpen] = useState(false);
   const [confirmTarget, setConfirmTarget] = useState<Cita | null>(null);
   const [cancelTarget, setCancelTarget] = useState<Cita | null>(null);
-  const [submitting, setSubmitting] = useState<null | "confirmar" | "cancelar">(null);
+  const [submitting, setSubmitting] = useState<null | "confirmar" | "cancelar">(
+    null
+  );
+
+  // Configuración dinámica del backend
+  const [config, setConfig] = useState<any | null>(null);
+
+  const celularLocal = e164ToLocal(config?.celular_contacto);
+
+  useEffect(() => {
+    api
+      .get("/configuracion/")
+      .then((res) => setConfig(res.data))
+      .catch(() => setConfig(null));
+  }, []);
+
+  // Valores dinámicos con fallback
+  const confirmFromHours: number =
+    typeof config?.horas_confirmar_desde === "number"
+      ? config.horas_confirmar_desde
+      : 24;
+  const confirmUntilHours: number =
+    typeof config?.horas_confirmar_hasta === "number"
+      ? config.horas_confirmar_hasta
+      : 12;
+  const maxReprogramaciones: number =
+    typeof config?.max_reprogramaciones === "number"
+      ? config.max_reprogramaciones
+      : 1;
 
   // Lee state.toast si se navegó aquí con un mensaje
   useEffect(() => {
@@ -250,9 +283,18 @@ export default function GestionarCitas() {
             value: String(o.id_odontologo ?? o.id ?? o.pk),
             label:
               o.nombreCompleto ??
-              (`${o.nombres ?? ""} ${o.apellidos ?? ""}`.replace(/\s+/g, " ").trim() || "Sin nombre"),
-            especialidades: Array.isArray(o.especialidades) ? o.especialidades.filter(Boolean) : [],
-            especialidades_detalle: Array.isArray(o.especialidades_detalle) ? o.especialidades_detalle : [],
+              (
+                `${o.nombres ?? ""} ${o.apellidos ?? ""}`.replace(
+                  /\s+/g,
+                  " "
+                ) || "Sin nombre"
+              ).trim(),
+            especialidades: Array.isArray(o.especialidades)
+              ? o.especialidades.filter(Boolean)
+              : [],
+            especialidades_detalle: Array.isArray(o.especialidades_detalle)
+              ? o.especialidades_detalle
+              : [],
           }))
         );
       } finally {
@@ -271,7 +313,11 @@ export default function GestionarCitas() {
         .map((e) => String(e.nombre))
         .filter(Boolean);
       let list = activas;
-      if (!list.length && Array.isArray(o.especialidades) && o.especialidades.length) {
+      if (
+        !list.length &&
+        Array.isArray(o.especialidades) &&
+        o.especialidades.length
+      ) {
         list = o.especialidades.filter(Boolean) as string[];
       }
       map.set(id, list);
@@ -281,23 +327,28 @@ export default function GestionarCitas() {
 
   /* ---------- loader de citas pendientes y confirmadas (con filtros) ---------- */
   const mapRow = (c: any): Cita => {
-    const odo =
-      c.odontologo
-        ? {
-            id_odontologo: c.odontologo.id_odontologo ?? c.odontologo.id,
-            nombre:
-              c.odontologo.nombreCompleto ??
-              `${c.odontologo.nombres ?? ""} ${c.odontologo.apellidos ?? ""}`.trim(),
-          }
-        : c.odontologo_nombre
-        ? { id_odontologo: c.id_odontologo ?? 0, nombre: c.odontologo_nombre }
-        : null;
+    const odo = c.odontologo
+      ? {
+          id_odontologo: c.odontologo.id_odontologo ?? c.odontologo.id,
+          nombre:
+            c.odontologo.nombreCompleto ??
+            `${c.odontologo.nombres ?? ""} ${
+              c.odontologo.apellidos ?? ""
+            }`.trim(),
+        }
+      : c.odontologo_nombre
+      ? { id_odontologo: c.id_odontologo ?? 0, nombre: c.odontologo_nombre }
+      : null;
 
     const especialidadesSet = new Set<string>();
-    if (c.especialidad?.nombre) especialidadesSet.add(String(c.especialidad.nombre));
-    if (c.especialidad_nombre) especialidadesSet.add(String(c.especialidad_nombre));
+    if (c.especialidad?.nombre)
+      especialidadesSet.add(String(c.especialidad.nombre));
+    if (c.especialidad_nombre)
+      especialidadesSet.add(String(c.especialidad_nombre));
     if (Array.isArray(c?.odontologo_especialidades))
-      c.odontologo_especialidades.forEach((n: any) => n && especialidadesSet.add(String(n)));
+      c.odontologo_especialidades.forEach(
+        (n: any) => n && especialidadesSet.add(String(n))
+      );
 
     const oid = odo?.id_odontologo ?? c.id_odontologo;
     if (Number.isFinite(oid)) {
@@ -320,15 +371,19 @@ export default function GestionarCitas() {
       especialidad: c.especialidad ?? null,
       especialidad_nombre: c.especialidad_nombre ?? null,
       consultorio: c.consultorio
-        ? { id_consultorio: c.consultorio.id_consultorio ?? c.consultorio.id, numero: c.consultorio.numero }
+        ? {
+            id_consultorio: c.consultorio.id_consultorio ?? c.consultorio.id,
+            numero: c.consultorio.numero,
+          }
         : c.id_consultorio
-        ? { id_consultorio: c.id_consultorio, numero: c.consultorio_numero ?? "-" }
+        ? {
+            id_consultorio: c.id_consultorio,
+            numero: c.consultorio_numero ?? "-",
+          }
         : null,
       confirmable_hasta: c.confirmable_hasta ?? null,
       reprogramable_hasta: c.reprogramable_hasta ?? null,
       cancelable_hasta: c.cancelable_hasta ?? null,
-
-      // Nuevos/compatibilidad para bloqueo de reprogramación
       reprogramaciones: c.reprogramaciones ?? null,
       ya_reprogramada: c.ya_reprogramada ?? null,
       reprogramada_veces: c.reprogramada_veces ?? null,
@@ -347,12 +402,22 @@ export default function GestionarCitas() {
 
     // Hacemos 2 requests: pendientes y confirmadas
     const [resPend, resConf] = await Promise.all([
-      api.get("/citas/", { params: { ...baseParams, estado: "pendiente" }, signal: signal as any }),
-      api.get("/citas/", { params: { ...baseParams, estado: "confirmada" }, signal: signal as any }),
+      api.get("/citas/", {
+        params: { ...baseParams, estado: "pendiente" },
+        signal: signal as any,
+      }),
+      api.get("/citas/", {
+        params: { ...baseParams, estado: "confirmada" },
+        signal: signal as any,
+      }),
     ]);
 
-    const rowsP: any[] = Array.isArray(resPend.data) ? resPend.data : resPend.data?.results ?? [];
-    const rowsC: any[] = Array.isArray(resConf.data) ? resConf.data : resConf.data?.results ?? [];
+    const rowsP: any[] = Array.isArray(resPend.data)
+      ? resPend.data
+      : resPend.data?.results ?? [];
+    const rowsC: any[] = Array.isArray(resConf.data)
+      ? resConf.data
+      : resConf.data?.results ?? [];
 
     // Unimos y mapeamos
     const merged = [...rowsP, ...rowsC].map(mapRow);
@@ -394,7 +459,11 @@ export default function GestionarCitas() {
     const q = fTexto.trim().toLowerCase();
     return citas.filter((c) => {
       const t1 = (c.motivo ?? "").toLowerCase();
-      const t2 = (c.odontologo?.nombre ?? c.odontologo_nombre ?? "").toLowerCase();
+      const t2 = (
+        c.odontologo?.nombre ??
+        c.odontologo_nombre ??
+        ""
+      ).toLowerCase();
       const t3 = (c.consultorio?.numero ?? "").toLowerCase();
       return t1.includes(q) || t2.includes(q) || t3.includes(q);
     });
@@ -402,31 +471,53 @@ export default function GestionarCitas() {
 
   /* ---------- helpers de UI/acciones ---------- */
   const isAlreadyRescheduled = (c: Cita) => {
+    // Si el backend ya marcó bandera explícita, respetamos
     if (c.ya_reprogramada === true) return true;
-    const vNew = c.reprogramaciones ?? 0;
-    if (typeof vNew === "number" && vNew >= 1) return true;
-    const vLegacy = c.reprogramada_veces ?? 0;
-    if (typeof vLegacy === "number" && vLegacy > 0) return true;
     if (c.reprogramada === true) return true;
-    return false;
+
+    const countNew =
+      typeof c.reprogramaciones === "number" ? c.reprogramaciones : 0;
+    const countLegacy =
+      typeof c.reprogramada_veces === "number" ? c.reprogramada_veces : 0;
+    const total = Math.max(countNew, countLegacy, 0);
+
+    return total >= maxReprogramaciones;
   };
 
-  // Abre modal de confirmar con validación de ventana 24–12h
+  // Abre modal de confirmar con validación de ventana dinámica + backend
   function abrirConfirmar(c: Cita) {
     if (c.estado !== "pendiente") {
       alert("Esta cita ya está confirmada.");
       return;
     }
+
     const hrs = hoursUntil(parseDateTimeLocal(c.fecha, c.hora_inicio));
-    const enVentana = hrs !== null && hrs <= CONFIRM_FROM_HOURS && hrs >= CONFIRM_UNTIL_HOURS;
+    const backendLimitOk =
+      !c.confirmable_hasta || !isBeforeOrEqualNow(c.confirmable_hasta);
+
+    const enVentana =
+      hrs !== null &&
+      hrs <= confirmFromHours &&
+      hrs >= confirmUntilHours &&
+      backendLimitOk;
+
     if (!enVentana) {
-      if (hrs !== null && hrs > CONFIRM_FROM_HOURS) {
-        alert(`La confirmación se habilitará ${CONFIRM_FROM_HOURS} h antes de la cita.`);
+      if (!backendLimitOk) {
+        alert(
+          "La ventana de confirmación ha concluido. Para gestionar la cita, comunícate con el consultorio."
+        );
+      } else if (hrs !== null && hrs > confirmFromHours) {
+        alert(
+          `La confirmación se habilitará ${confirmFromHours} h antes de la cita.`
+        );
       } else {
-        alert("La ventana de confirmación ha concluido. Por favor comunícate con el consultorio.");
+        alert(
+          "La ventana de confirmación ha concluido. Para gestionar la cita, comunícate con el consultorio."
+        );
       }
       return;
     }
+
     setConfirmTarget(c);
     setConfirmModalOpen(true);
   }
@@ -436,10 +527,12 @@ export default function GestionarCitas() {
     setSubmitting("confirmar");
     try {
       await api.patch(`/citas/${confirmTarget.id_cita}/confirmar/`);
-      // Saca la cita de la lista de "pendientes" y la recargamos como confirmada
+      // Actualizamos estado localmente
       setCitas((prev) =>
         prev.map((x) =>
-          x.id_cita === confirmTarget.id_cita ? { ...x, estado: "confirmada" } : x
+          x.id_cita === confirmTarget.id_cita
+            ? { ...x, estado: "confirmada" }
+            : x
         )
       );
       show("success", "Cita confirmada.");
@@ -452,7 +545,7 @@ export default function GestionarCitas() {
     }
   }
 
-  // Abre modal de cancelar (el backend ya valida si está permitido)
+  // Abre modal de cancelar
   function abrirCancelar(c: Cita) {
     setCancelTarget(c);
     setCancelModalOpen(true);
@@ -464,7 +557,9 @@ export default function GestionarCitas() {
     try {
       await api.patch(`/citas/${cancelTarget.id_cita}/cancelar/`);
       // Si cancela, la quitamos del listado de pendientes/confirmadas
-      setCitas((prev) => prev.filter((x) => x.id_cita !== cancelTarget.id_cita));
+      setCitas((prev) =>
+        prev.filter((x) => x.id_cita !== cancelTarget.id_cita)
+      );
       show("success", "Cita cancelada.");
     } catch (e: any) {
       show("error", e?.response?.data?.detail ?? "No se pudo cancelar.");
@@ -493,10 +588,14 @@ export default function GestionarCitas() {
 
   /* ---------- UI ---------- */
   const badgeByEstado: Record<Estado, string> = {
-    pendiente: "inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full border bg-amber-100 text-amber-800 border-amber-200",
-    confirmada: "inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full border bg-green-100 text-green-800 border-green-200",
-    realizada: "inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full border bg-blue-100 text-blue-800 border-blue-200",
-    cancelada: "inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full border bg-red-100 text-red-800 border-red-200",
+    pendiente:
+      "inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full border bg-amber-100 text-amber-800 border-amber-200",
+    confirmada:
+      "inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full border bg-green-100 text-green-800 border-green-200",
+    realizada:
+      "inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full border bg-blue-100 text-blue-800 border-blue-200",
+    cancelada:
+      "inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full border bg-red-100 text-red-800 border-red-200",
   };
 
   return (
@@ -517,10 +616,16 @@ export default function GestionarCitas() {
               .join(" ")}
           >
             <div className="mt-0.5">
-              {t.kind === "success" && <CheckCircle2 className="w-4 h-4 text-green-600" />}
-              {t.kind === "error" && <XCircle className="w-4 h-4 text-red-600" />}
+              {t.kind === "success" && (
+                <CheckCircle2 className="w-4 h-4 text-green-600" />
+              )}
+              {t.kind === "error" && (
+                <XCircle className="w-4 h-4 text-red-600" />
+              )}
               {t.kind === "info" && <Info className="w-4 h-4 text-blue-600" />}
-              {t.kind === "warning" && <AlertTriangle className="w-4 h-4 text-amber-600" />}
+              {t.kind === "warning" && (
+                <AlertTriangle className="w-4 h-4 text-amber-600" />
+              )}
             </div>
             <div className="text-sm">{t.msg}</div>
             <button
@@ -582,7 +687,9 @@ export default function GestionarCitas() {
               className="w-full rounded-lg border px-3 py-2 bg-white"
               disabled={loadingFiltros}
             >
-              <option value="">{loadingFiltros ? "Cargando..." : "Todos"}</option>
+              <option value="">
+                {loadingFiltros ? "Cargando..." : "Todos"}
+              </option>
               {odOptions.map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
@@ -610,7 +717,9 @@ export default function GestionarCitas() {
 
       {/* Conteo / estado */}
       <div className="text-sm text-gray-500">
-        {loading ? "Cargando citas…" : `${filas.length} cita(s) pendiente(s) o confirmada(s)`}
+        {loading
+          ? "Cargando citas…"
+          : `${filas.length} cita(s) pendiente(s) o confirmada(s)`}
       </div>
 
       {/* Grid */}
@@ -621,7 +730,9 @@ export default function GestionarCitas() {
         </div>
       ) : filas.length === 0 ? (
         <div className="p-8 text-center text-gray-600">
-          <p className="font-medium">No tienes citas pendientes o confirmadas.</p>
+          <p className="font-medium">
+            No tienes citas pendientes o confirmadas.
+          </p>
           <p className="text-sm mt-1">
             Agenda una nueva desde <b>Agendar Citas</b>.
           </p>
@@ -631,22 +742,45 @@ export default function GestionarCitas() {
           {filas.map((c) => {
             const alreadyRes = isAlreadyRescheduled(c);
 
-            // Reprogramación: si está confirmada, siempre bloqueada
-            const disableReprogByTime = !!c.reprogramable_hasta && isBeforeOrEqualNow(c.reprogramable_hasta);
-            const reprogramDisabled = c.estado === "confirmada" || alreadyRes || disableReprogByTime;
+            // Confirmación: dinámica según config + backend
+            const hrsToAppt = hoursUntil(
+              parseDateTimeLocal(c.fecha, c.hora_inicio)
+            );
+            const backendConfirmLimitOk =
+              !c.confirmable_hasta || !isBeforeOrEqualNow(c.confirmable_hasta);
 
-            // Confirmación: solo disponible en ventana y si está pendiente
-            const hrsToAppt = hoursUntil(parseDateTimeLocal(c.fecha, c.hora_inicio));
+            const confirmWindowPassed =
+              !backendConfirmLimitOk ||
+              (hrsToAppt !== null && hrsToAppt < confirmUntilHours);
+
             const confirmWindowOk =
-              hrsToAppt !== null && hrsToAppt <= CONFIRM_FROM_HOURS && hrsToAppt >= CONFIRM_UNTIL_HOURS;
+              hrsToAppt !== null &&
+              hrsToAppt <= confirmFromHours &&
+              hrsToAppt >= confirmUntilHours &&
+              backendConfirmLimitOk;
             const disableConfirm = c.estado !== "pendiente" || !confirmWindowOk;
 
+            // Reprogramación: si está confirmada, siempre bloqueada
+            // También bloqueada si pasó la ventana de confirmación (seguridad)
+            const disableReprogByTime =
+              confirmWindowPassed ||
+              (!!c.reprogramable_hasta &&
+                isBeforeOrEqualNow(c.reprogramable_hasta));
+            const reprogramDisabled =
+              c.estado === "confirmada" || alreadyRes || disableReprogByTime;
+
             // Cancelación: si está confirmada, bloquear desde la app
+            // También bloqueada si pasó la ventana de confirmación (seguridad)
             const disableCancelByTime =
-              c.estado === "confirmada" || (!!c.cancelable_hasta && isBeforeOrEqualNow(c.cancelable_hasta));
+              c.estado === "confirmada" ||
+              confirmWindowPassed ||
+              (!!c.cancelable_hasta && isBeforeOrEqualNow(c.cancelable_hasta));
 
             return (
-              <div key={c.id_cita} className="rounded-2xl shadow-md bg-white overflow-hidden flex flex-col">
+              <div
+                key={c.id_cita}
+                className="rounded-2xl shadow-md bg-white overflow-hidden flex flex-col transition-all duration-300 hover:shadow-xl hover:-translate-y-1 hover:bg-gradient-to-br hover:from-white hover:to-blue-50/30 cursor-pointer"
+              >
                 <div className="p-4 flex items-start justify-between gap-2">
                   <div>
                     <h3 className="text-lg font-semibold">
@@ -654,13 +788,24 @@ export default function GestionarCitas() {
                     </h3>
                     <div className="mt-1 text-sm text-gray-700 flex items-center gap-2">
                       <Stethoscope className="h-4 w-4" />
-                      <span>{c.odontologo?.nombre ?? c.odontologo_nombre ?? "—"}</span>
+                      <span>
+                        {c.odontologo?.nombre ?? c.odontologo_nombre ?? "—"}
+                      </span>
                     </div>
                     {(() => {
-                      const explicit = Array.isArray(c.odontologo_especialidades) ? c.odontologo_especialidades : null;
-                      const oid = c.odontologo?.id_odontologo as number | undefined;
+                      const explicit = Array.isArray(
+                        c.odontologo_especialidades
+                      )
+                        ? c.odontologo_especialidades
+                        : null;
+                      const oid = c.odontologo?.id_odontologo as
+                        | number
+                        | undefined;
                       const fromCatalog = oid ? odEspMap.get(oid) : undefined;
-                      const list = (explicit && explicit.length ? explicit : fromCatalog) ?? [];
+                      const list =
+                        (explicit && explicit.length
+                          ? explicit
+                          : fromCatalog) ?? [];
                       return list.length ? (
                         <div className="text-xs text-gray-500 mt-0.5">
                           {list.join(", ")}
@@ -694,20 +839,38 @@ export default function GestionarCitas() {
                   {/* Nota si ya fue reprogramada */}
                   {alreadyRes && c.estado !== "confirmada" && (
                     <div className="mt-2 flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
-                      <Phone size={14} className="mt-0.5" />
+                      <Phone size={20} className="mt-0.5 text-amber-700" />
                       <span>
-                        Esta cita ya fue <b>reprogramada una vez</b>. Si necesitas reprogramarla nuevamente, por favor <b>comunícate con el consultorio</b>.
+                        Esta cita ya fue{" "}
+                        <b>
+                          reprogramada{" "}
+                          {maxReprogramaciones > 1
+                            ? `${maxReprogramaciones} veces`
+                            : "una vez"}
+                        </b>
+                        . Si necesitas reprogramarla nuevamente, por favor{" "}
+                        <b>
+                          comunícate con el consultorio al{" "}
+                          {celularLocal || "09XXXXXXX"}
+                        </b>
+                        .
                       </span>
                     </div>
                   )}
 
                   {/* Mensaje especial para confirmadas */}
                   {c.estado === "confirmada" && (
-                    <div className="mt-2 flex items-start gap-2 text-xs text-blue-800 bg-blue-50 border border-blue-200 rounded p-2">
-                      <Info size={14} className="mt-0.5" />
+                    <div className="mt-2 flex items-start gap-2 text-xs text-green-800 bg-green-50 border border-green-200 rounded p-2">
+                      <Info size={20} className="mt-0.5 text-green-700" />
                       <span>
-                        Esta cita está <b>confirmada</b>. Desde la aplicación no puedes <b>reprogramar</b> ni <b>cancelar</b>. 
-                        Si te surge una <b>emergencia</b> y necesitas gestionar la cita, por favor <b>llama al consultorio</b>.
+                        Esta cita está <b>confirmada</b>. Desde la aplicación no
+                        puedes <b>reprogramar</b> ni <b>cancelar</b>. Si te
+                        surge una <b>emergencia</b> y necesitas gestionar la
+                        cita, por favor{" "}
+                        <b>
+                          llama al consultorio al {celularLocal || "09XXXXXXX"}
+                        </b>
+                        .
                       </span>
                     </div>
                   )}
@@ -715,18 +878,29 @@ export default function GestionarCitas() {
                   {/* Ayuda de confirmación (solo si está pendiente) */}
                   {c.estado === "pendiente" && (
                     <div className="text-xs text-gray-600">
-                      {confirmWindowOk ? (
-                        <>Puedes confirmar tu asistencia ahora. La confirmación está disponible desde {CONFIRM_FROM_HOURS} h hasta {CONFIRM_UNTIL_HOURS} h antes de la cita.</>
-                      ) : hrsToAppt !== null && hrsToAppt > CONFIRM_FROM_HOURS ? (
-                        <>La confirmación se habilitará {CONFIRM_FROM_HOURS} h antes de la cita.</>
-                      ) : hrsToAppt !== null && hrsToAppt < CONFIRM_UNTIL_HOURS ? (
-                        <>La ventana de confirmación ha concluido. Para gestionar la cita, comunícate con el consultorio.</>
+                      {hrsToAppt == null ? null : confirmWindowPassed ? (
+                        <>
+                          La ventana de confirmación ha concluido. Para
+                          gestionar la cita, comunícate con el consultorio al{" "}
+                          <b>{celularLocal || "09XXXXXXX"}</b>.
+                        </>
+                      ) : confirmWindowOk ? (
+                        <>
+                          Puedes confirmar tu asistencia ahora. La confirmación
+                          está disponible desde <b>{confirmFromHours} h</b>{" "}
+                          hasta <b>{confirmUntilHours} h</b> antes de la cita.
+                        </>
+                      ) : hrsToAppt > confirmFromHours ? (
+                        <>
+                          La confirmación se habilitará{" "}
+                          <b>{confirmFromHours} h</b> antes de la cita.
+                        </>
                       ) : null}
                     </div>
                   )}
                 </div>
 
-                <div className="mt-auto border-t px-4 py-3 flex items-center justify-between gap-2 flex-wrap">
+                <div className="mt-auto border-t px-4 py-3 flex items-center justify-between gap-1 flex-wrap md:flex-nowrap">
                   <button
                     onClick={() => irAReprogramar(c)}
                     className={`${ACTION_BTN_BASE} ${BTN_REPROG}`}
@@ -734,8 +908,10 @@ export default function GestionarCitas() {
                     title={
                       c.estado === "confirmada"
                         ? "No puedes reprogramar una cita confirmada desde la app"
-                        : isAlreadyRescheduled(c)
-                        ? "Ya no puedes reprogramar nuevamente"
+                        : alreadyRes
+                        ? "Ya no puedes reprogramar nuevamente desde la app"
+                        : confirmWindowPassed
+                        ? "La ventana de confirmación pasó. Todas las opciones están bloqueadas por seguridad"
                         : disableReprogByTime
                         ? "El tiempo para reprogramar ya pasó"
                         : "Reprogramar / Editar"
@@ -746,7 +922,7 @@ export default function GestionarCitas() {
                     Reprogramar
                   </button>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1">
                     <button
                       onClick={() => abrirCancelar(c)}
                       className={`${ACTION_BTN_BASE} ${BTN_CANCEL}`}
@@ -754,6 +930,8 @@ export default function GestionarCitas() {
                       title={
                         c.estado === "confirmada"
                           ? "No puedes cancelar una cita confirmada desde la app"
+                          : confirmWindowPassed
+                          ? "La ventana de confirmación pasó. Todas las opciones están bloqueadas por seguridad"
                           : disableCancelByTime
                           ? "El tiempo para cancelar ya pasó"
                           : "Cancelar"
@@ -771,7 +949,7 @@ export default function GestionarCitas() {
                         c.estado !== "pendiente"
                           ? "Ya está confirmada"
                           : !confirmWindowOk
-                          ? "Solo puedes confirmar entre 24h y 12h antes"
+                          ? `Solo puedes confirmar entre ${confirmFromHours} h y ${confirmUntilHours} h antes`
                           : "Confirmar"
                       }
                     >
@@ -800,13 +978,17 @@ export default function GestionarCitas() {
       >
         <div className="space-y-2">
           <p>
-            ¿Estás segura/o de <b>confirmar tu asistencia</b>? Esta acción <b>no se puede deshacer</b> desde la aplicación.
+            ¿Estás segura/o de <b>confirmar tu asistencia</b>? Esta acción{" "}
+            <b>no se puede deshacer</b> desde la aplicación.
           </p>
           <p className="text-sm text-gray-700">
-            Tras confirmar, <b>no podrás reprogramar ni cancelar</b> desde la app. Si confirmas y no asistes, tu cuenta podría ser <b>temporalmente bloqueada</b>.
+            Tras confirmar, <b>no podrás reprogramar ni cancelar</b> desde la
+            app. Si confirmas y no asistes, tu cuenta podría ser{" "}
+            <b>temporalmente bloqueada</b>.
           </p>
           <p className="text-sm text-gray-700">
-            En caso de una emergencia, por favor <b>llama al consultorio</b> para notificar y solicitar cancelación o reprogramación.
+            En caso de una emergencia, por favor <b>llama al consultorio</b>{" "}
+            para notificar y solicitar cancelación o reprogramación.
           </p>
         </div>
       </Modal>
@@ -824,9 +1006,39 @@ export default function GestionarCitas() {
         }}
         confirming={submitting === "cancelar"}
       >
-        <div className="space-y-2">
+        <div className="space-y-3 text-sm text-gray-700">
           <p>
-            ¿Deseas <b>cancelar</b> esta cita?
+            ¿Estás seguro de que deseas <b>cancelar esta cita</b>?
+          </p>
+
+          <ul className="list-disc pl-5 space-y-1">
+            <li>
+              Te recomendamos <b>reprogramar</b> en lugar de cancelar. El
+              sistema permite reprogramar hasta{" "}
+              <b>{config?.max_reprogramaciones ?? 1} vez(es)</b>.
+            </li>
+
+            <li>
+              Si cancelas, se aplicará una <b>penalización automática</b> y no
+              podrás agendar nuevamente con este odontólogo durante{" "}
+              <b>{config?.cooldown_dias ?? 7} día(s)</b>. Esta restricción{" "}
+              <b>solo aplica para este odontólogo</b> — podrás agendar con otros
+              especialistas sin problemas.
+            </li>
+
+            <li>
+              La penalización se levanta automáticamente una vez cumplido el
+              tiempo indicado.
+            </li>
+
+            <li>
+              Si necesitas una <b>cita de emergencia</b> o gestión especial,
+              comunícate al consultorio: <b>{celularLocal || "09XXXXXXX"}</b>.
+            </li>
+          </ul>
+
+          <p className="text-xs text-gray-500">
+            Esta acción no se puede deshacer desde la aplicación.
           </p>
         </div>
       </Modal>

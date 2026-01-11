@@ -9,7 +9,7 @@ import type {
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000/api/v1";
 
-/** Dónde están los tokens (respeta “Recordarme”). Se marca en login con localStorage.setItem("tokenStore", "local"|"session") */
+// Dónde están los tokens (respeta “Recordarme”). Se marca en login con localStorage.setItem("tokenStore", "local"|"session")
 function getStore(): Storage {
   const which = localStorage.getItem("tokenStore"); // 'local' | 'session'
   return which === "session" ? sessionStorage : localStorage;
@@ -18,7 +18,7 @@ function getStore(): Storage {
 let isRefreshing = false;
 let refreshPromise: Promise<string | null> | null = null;
 
-/** Pide un nuevo access token usando el refresh token */
+// Pide un nuevo access token usando el refresh token
 async function refreshAccessToken(): Promise<string | null> {
   const store = getStore();
   const refresh = store.getItem("refreshToken");
@@ -40,7 +40,7 @@ async function refreshAccessToken(): Promise<string | null> {
 
 export const api: AxiosInstance = axios.create({ baseURL: API_BASE });
 
-/** Adjunta access token a cada request */
+// Adjunta access token a cada request
 api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   const token = getStore().getItem("accessToken");
   if (token) {
@@ -50,7 +50,7 @@ api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   return config;
 });
 
-/** Si 401 por token vencido → refresh → reintenta */
+// Si 401 por token vencido → refresh → reintenta
 api.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {

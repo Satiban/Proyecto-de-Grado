@@ -11,8 +11,10 @@ import {
   CalendarPlus,
   Eye,
   Pencil,
+  Stethoscope,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
+import { useLocation } from "react-router-dom";
 
 /* ===== Tipos ===== */
 type Cita = {
@@ -33,6 +35,11 @@ type Cita = {
   paciente_cedula?: string;
   odontologo_nombre?: string;
   consultorio?: { id_consultorio: number; numero: string };
+  pago?: {
+    id_pago_cita: number;
+    estado_pago: "pendiente" | "pagado" | "reembolsado";
+    monto?: string;
+  } | null;
 };
 
 type HorarioVigente = {
@@ -69,7 +76,6 @@ const ESTADOS = [
   { value: "realizada", label: "Realizada" },
   { value: "mantenimiento", label: "Mantenimiento" },
 ];
-
 const pad2 = (n: number) => String(n).padStart(2, "0");
 const toISODate = (d: Date) =>
   `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
@@ -91,6 +97,12 @@ const normalizeEstado = (s: string) =>
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
+
+function isDiaLaboral(iso: string, horarios: HorarioVigente[]): boolean {
+  if (!horarios?.length) return false;
+  const dow = (fromISO(iso).getDay() + 6) % 7; // lunes=0
+  return horarios.some((h) => h.dia_semana === dow && h.vigente !== false);
+}
 
 /* ===== Hook: click outside ===== */
 function useClickAway<T extends HTMLElement>(cb: () => void) {
@@ -289,21 +301,73 @@ function DatePopover({
   );
 }
 
-function AccionesCita({ id }: { id: number }) {
+function AccionesCita({ cita, fecha }: { cita: Cita; fecha: string }) {
+  const { id_cita, estado } = cita;
+
   return (
     <div className="flex items-center justify-center gap-2">
-      <Link
-        to={`/odontologo/citas/${id}/ver`}
-        className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
-      >
-        <Eye className="size-4" /> Ver
-      </Link>
-      <Link
-        to={`/odontologo/citas/${id}/editar`}
-        className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
-      >
-        <Pencil className="size-4" /> Editar
-      </Link>
+      {/* Pendiente - solo Ver */}
+      {estado === "pendiente" && (
+        <Link
+          to={`/odontologo/citas/${id_cita}/ver`}
+          state={{ fecha }}
+          className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
+        >
+          <Eye className="size-4" /> Ver
+        </Link>
+      )}
+
+      {/* Confirmada - Ver y Atender */}
+      {estado === "confirmada" && (
+        <>
+          <Link
+            to={`/odontologo/citas/${id_cita}/ver`}
+            state={{ fecha }}
+            className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
+          >
+            <Eye className="size-4" /> Ver
+          </Link>
+          <Link
+            to={`/odontologo/citas/${id_cita}/atencion`}
+            state={{ fecha }}
+            className="inline-flex items-center gap-1 rounded-lg px-2 py-1 bg-emerald-600 text-white hover:bg-emerald-700"
+          >
+            <Stethoscope className="size-4" /> Atender
+          </Link>
+        </>
+      )}
+
+      {/* Cancelada - solo Ver */}
+      {estado === "cancelada" && (
+        <Link
+          to={`/odontologo/citas/${id_cita}/ver`}
+          state={{ fecha }}
+          className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
+        >
+          <Eye className="size-4" /> Ver
+        </Link>
+      )}
+
+      {/* Mantenimiento - solo Editar */}
+      {estado === "mantenimiento" && (
+        <Link
+          to={`/odontologo/citas/${id_cita}/editar`}
+          className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
+        >
+          <Pencil className="size-4" /> Editar
+        </Link>
+      )}
+
+      {/* Realizada - solo Ver */}
+      {estado === "realizada" && (
+        <Link
+          to={`/odontologo/citas/${id_cita}/ver`}
+          state={{ fecha }}
+          className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
+        >
+          <Eye className="size-4" /> Ver
+        </Link>
+      )}
     </div>
   );
 }
@@ -312,13 +376,16 @@ function AccionesCita({ id }: { id: number }) {
 export default function Agenda() {
   const navigate = useNavigate();
   const { usuario } = useAuth();
+  const location = useLocation();
+  const [fecha, setFecha] = useState<string>(() => {
+    const state = location.state as any;
+    return state?.fechaNueva || state?.fecha || toISODate(new Date());
+  });
 
   const odontologoId: number | null =
     (usuario as any)?.odontologo?.id_odontologo ??
     (usuario as any)?.id_odontologo ??
     null;
-
-  const [fecha, setFecha] = useState<string>(() => toISODate(new Date()));
   const [consultorios, setConsultorios] = useState<ConsultorioOpt[]>([]);
   const [fConsul, setFConsul] = useState<number | "">("");
   const [fEstado, setFEstado] = useState<string>("");
@@ -398,21 +465,30 @@ export default function Agenda() {
   /* Consultorios y horarios (una sola vez) */
   useEffect(() => {
     if (!odontologoId) return;
+    if (consultorios.length > 0 && horarios.length > 0) return;
+
     (async () => {
-      if (consultorios.length === 0) {
-        const co = await api.get("/consultorios/?page_size=1000");
-        const coList = (co.data.results ?? co.data).map((c: any) => ({
-          id: c.id_consultorio,
-          nombre: `Consultorio ${c.numero}`,
-          estado: !!c.estado,
-        }));
-        setConsultorios(coList);
-      }
-      if (horarios.length === 0) {
-        const h = await api.get(
-          `/odontologos/${odontologoId}/horarios_vigentes/`
-        );
-        setHorarios(h.data ?? []);
+      try {
+        const [coRes, hRes] = await Promise.all([
+          consultorios.length === 0
+            ? api.get("/consultorios/?page_size=1000")
+            : null,
+          horarios.length === 0
+            ? api.get(`/odontologos/${odontologoId}/horarios_vigentes/`)
+            : null,
+        ]);
+
+        if (coRes) {
+          const coList = (coRes.data.results ?? coRes.data).map((c: any) => ({
+            id: c.id_consultorio,
+            nombre: `Consultorio ${c.numero}`,
+            estado: !!c.estado,
+          }));
+          setConsultorios(coList);
+        }
+        if (hRes) setHorarios(hRes.data ?? []);
+      } catch (err) {
+        console.error("Error cargando consultorios/horarios", err);
       }
     })();
   }, [odontologoId]);
@@ -422,26 +498,39 @@ export default function Agenda() {
     if (!odontologoId) return;
     setLoading(true);
     try {
-      const params: any = { fecha, id_odontologo: odontologoId };
+      const d = fromISO(fecha);
+      const params: any = {
+        fecha,
+        year: d.getFullYear(),
+        month: d.getMonth() + 1,
+        id_odontologo: odontologoId,
+      };
       if (fConsul) params.id_consultorio = fConsul;
       if (fEstado) params.estado = fEstado;
 
-      const [citasRes, metaRes] = await Promise.all([
-        api.get("/citas/", { params: { ...params, ordering: "hora" } }),
-        api.get("/citas/dia-metadata/", { params }),
-      ]);
+      const res = await api.get("/citas/agenda-completa/", { params });
 
-      setCitas(citasRes.data.results ?? citasRes.data);
-      setMetaDia(metaRes.data);
+      setCitas(res.data.citas ?? []);
+      setMetaDia(res.data.dia_meta ?? null);
+      setResumenMes((prev) => ({ ...prev, ...(res.data.resumen_mes ?? {}) }));
+      setBloqueos((prev) => {
+        const set = new Set(prev);
+        const nuevos = (res.data.bloqueos ?? []).map((x: any) =>
+          typeof x === "string" ? x : x?.fecha
+        );
+        nuevos.filter(Boolean).forEach((iso: string) => set.add(iso));
+        return Array.from(set);
+      });
     } finally {
       setLoading(false);
     }
   }
 
   /* Cache de resumen mensual */
-  function ymKey(y: number, m1: number) {
-    return `${y}-${pad2(m1)}`;
+  function ymKey(y: number, m1: number, consul?: number | "", estado?: string) {
+    return `${y}-${pad2(m1)}-${consul || "all"}-${estado || "all"}`;
   }
+
   function ymAdd(y: number, m1to12: number, delta: number) {
     const d0 = new Date(y, m1to12 - 1 + delta, 1);
     return { y: d0.getFullYear(), m: d0.getMonth() + 1 };
@@ -466,17 +555,27 @@ export default function Agenda() {
         },
       }),
     ]);
-    setBloqueos((prev) => Array.from(new Set([...prev, ...(b.data ?? [])])));
+    setBloqueos((prev) => {
+      const set = new Set(prev);
+      const nuevos = (b.data ?? []).map((x: any) =>
+        typeof x === "string" ? x : x?.fecha
+      );
+      nuevos.filter(Boolean).forEach((iso: string) => set.add(iso));
+      return Array.from(set);
+    });
+
     setResumenMes((prev) => ({ ...prev, ...(rm.data ?? {}) }));
   }
   async function ensureMonthCached(y: number, m0: number) {
     if (!odontologoId) return;
     const around = [-1, 0, +1].map((off) => ymAdd(y, m0 + 1, off));
     const toFetch = around.filter(
-      ({ y, m }) => !fetchedMonthsRef.current.has(ymKey(y, m))
+      ({ y, m }) => !fetchedMonthsRef.current.has(ymKey(y, m, fConsul, fEstado))
     );
     if (toFetch.length === 0) return;
-    toFetch.forEach(({ y, m }) => fetchedMonthsRef.current.add(ymKey(y, m)));
+    toFetch.forEach(({ y, m }) =>
+      fetchedMonthsRef.current.add(ymKey(y, m, fConsul, fEstado))
+    );
     await Promise.all(toFetch.map(({ y, m }) => fetchMonthData(y, m)));
   }
 
@@ -517,6 +616,45 @@ export default function Agenda() {
       n === "mantenimiento"
         ? "Mantenimiento"
         : estado.charAt(0).toUpperCase() + estado.slice(1).toLowerCase();
+
+    return (
+      <span
+        className={`inline-block text-xs px-2 py-1 rounded-full border ${cls}`}
+      >
+        {label}
+      </span>
+    );
+  };
+
+  const estadoPagoPill = (cita: Cita) => {
+    // Si la cita no está realizada, no aplica mostrar pago
+    if (cita.estado !== "realizada") {
+      return <span className="text-gray-400 text-xs">—</span>;
+    }
+
+    // Si no hay pago registrado, mostrar como Pendiente
+    if (!cita.pago) {
+      return (
+        <span className="inline-block text-xs px-2 py-1 rounded-full border bg-amber-100 text-amber-800 border-amber-200">
+          Pendiente
+        </span>
+      );
+    }
+
+    const estado = cita.pago.estado_pago;
+    const cls =
+      estado === "pagado"
+        ? "bg-emerald-100 text-emerald-800 border-emerald-200"
+        : estado === "reembolsado"
+        ? "bg-red-100 text-red-800 border-red-200"
+        : "bg-amber-100 text-amber-800 border-amber-200";
+
+    const label =
+      estado === "pagado"
+        ? "Pagado"
+        : estado === "reembolsado"
+        ? "Reembolsado"
+        : "Pendiente";
 
     return (
       <span
@@ -646,33 +784,37 @@ export default function Agenda() {
       </div>
 
       {/* Banner */}
-      {metaDia && (
-        <div
-          className={[
-            "rounded-lg border px-3 py-2 text-sm",
-            metaDia.bloqueado
-              ? "bg-red-50 text-red-900 border-red-200"
-              : metaDia.lleno
-              ? "bg-amber-50 text-amber-900 border-amber-200"
-              : "bg-emerald-50 text-emerald-900 border-emerald-200",
-          ].join(" ")}
-        >
-          {metaDia.bloqueado ? (
-            <>
-              Día <b>{fecha}</b> bloqueado{" "}
-              {metaDia.motivo_bloqueo ? `: “${metaDia.motivo_bloqueo}”` : ""}
-            </>
-          ) : metaDia.lleno ? (
-            <>
-              Día <b>{fecha}</b> lleno: no hay más disponibilidad.
-            </>
-          ) : (
-            <>
-              Día <b>{fecha}</b> con disponibilidad.
-            </>
-          )}
-        </div>
-      )}
+      <div
+        className={[
+          "rounded-lg border px-3 py-2 text-sm",
+          !isDiaLaboral(fecha, horarios)
+            ? "bg-red-50 text-red-900 border-red-200"
+            : metaDia?.bloqueado
+            ? "bg-red-50 text-red-900 border-red-200"
+            : metaDia?.lleno
+            ? "bg-amber-50 text-amber-900 border-amber-200"
+            : "bg-emerald-50 text-emerald-900 border-emerald-200",
+        ].join(" ")}
+      >
+        {!isDiaLaboral(fecha, horarios) ? (
+          <>
+            Día <b>{fecha}</b> no laboral por horario de trabajo
+          </>
+        ) : metaDia?.bloqueado ? (
+          <>
+            Día <b>{fecha}</b> bloqueado{" "}
+            {metaDia.motivo_bloqueo ? `: “${metaDia.motivo_bloqueo}”` : ""}
+          </>
+        ) : metaDia?.lleno ? (
+          <>
+            Día <b>{fecha}</b> lleno: no hay más disponibilidad.
+          </>
+        ) : (
+          <>
+            Día <b>{fecha}</b> con disponibilidad.
+          </>
+        )}
+      </div>
 
       {/* Tabla */}
       <div className="rounded-xl bg-white shadow-md overflow-hidden">
@@ -690,7 +832,8 @@ export default function Agenda() {
                 <th className="py-2 px-3 text-center">Paciente</th>
                 <th className="py-2 px-3 text-center">Motivo</th>
                 <th className="py-2 px-3 text-center">Consultorio</th>
-                <th className="py-2 px-3 text-center">Estado</th>
+                <th className="py-2 px-3 text-center">Estado Cita</th>
+                <th className="py-2 px-3 text-center">Estado Pago</th>
                 <th className="py-2 px-3 text-center w-40">Acción</th>
               </tr>
             </thead>
@@ -727,7 +870,10 @@ export default function Agenda() {
                           {estadoPill(first.estado)}
                         </td>
                         <td className="py-2 px-3 text-center">
-                          <AccionesCita id={first.id_cita} />
+                          {estadoPagoPill(first)}
+                        </td>
+                        <td className="py-2 px-3 text-center">
+                          <AccionesCita cita={first} fecha={fecha} />
                         </td>
                       </tr>
                       {rest.map((cita, idx) => (
@@ -755,7 +901,10 @@ export default function Agenda() {
                             {estadoPill(cita.estado)}
                           </td>
                           <td className="py-2 px-3 text-center">
-                            <AccionesCita id={cita.id_cita} />
+                            {estadoPagoPill(cita)}
+                          </td>
+                          <td className="py-2 px-3 text-center">
+                            <AccionesCita cita={cita} fecha={fecha} />
                           </td>
                         </tr>
                       ))}
@@ -770,16 +919,19 @@ export default function Agenda() {
                     <td className="py-2 px-3 text-center">—</td>
                     <td className="py-2 px-3 text-center">—</td>
                     <td className="py-2 px-3 text-center">—</td>
+                    <td className="py-2 px-3 text-center">—</td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
         </div>
-        <p className="text-xs text-gray-500 p-4 pt-3">
-          * Agenda fija de 09:00 a 21:00 (intervalos de 1h). Las 13:00–15:00 no
-          se muestran.
-        </p>
+        <div className="border-t bg-gray-50">
+          <p className="text-xs text-gray-500 p-4 pt-3">
+            * Agenda fija de 09:00 a 21:00 (intervalos de 1h). Las 13:00–15:00 no
+            se muestran.
+          </p>
+        </div>
       </div>
     </div>
   );

@@ -1,0 +1,1 @@
+web: gunicorn oralflow_api.wsgi

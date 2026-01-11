@@ -21,6 +21,8 @@ const APPLY_URL = (groupId: string) =>
   `/bloqueos-dias/${groupId}/apply-mantenimiento/`;
 const REACTIVAR_URL = (groupId: string) =>
   `/bloqueos-dias/${groupId}/apply-reactivar/`;
+const PREVIEW_REACTIVAR_URL = (groupId: string) =>
+  `/bloqueos-dias/${groupId}/preview-reactivar/`;
 const PREVIEW_COLLECTION_URL = `/bloqueos-dias/preview-mantenimiento/`;
 const CREATE_AND_APPLY_URL = `/bloqueos-dias/create-and-apply/`;
 
@@ -56,6 +58,11 @@ type PreviewResponse = {
 type ApplyResponse = {
   batch_id: string;
   total_mantenimiento: number;
+  items: PreviewItem[];
+};
+
+type ReactivateResponse = {
+  total_pendientes: number;
   items: PreviewItem[];
 };
 
@@ -278,6 +285,11 @@ export default function BloqueosAgenda() {
   const [confirmLoading, setConfirmLoading] = useState(false);
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [pendingPayload, setPendingPayload] = useState<any | null>(null);
+  const [reactivateOpen, setReactivateOpen] = useState(false);
+  const [reactivateLoading, setReactivateLoading] = useState(false);
+  const [reactivatePreview, setReactivatePreview] =
+    useState<PreviewResponse | null>(null);
+  const [reactivateTarget, setReactivateTarget] = useState<Bloqueo | null>(null);
 
   // Controles Mes/Año
   const selYear = baseMonth.getFullYear();
@@ -506,7 +518,6 @@ export default function BloqueosAgenda() {
         return;
       }
 
-      // === MODO NUEVO (preview de colección: NO crea nada aún) ===
       setConfirmLoading(true);
       const rPrev = await api.post<PreviewResponse>(
         PREVIEW_COLLECTION_URL,
@@ -542,31 +553,71 @@ export default function BloqueosAgenda() {
   };
 
   const handleDelete = async (row: Bloqueo) => {
-    if (
-      !confirm(
-        "¿Eliminar este bloqueo? Las citas en mantenimiento por este bloqueo volverán a 'pendiente'."
-      )
-    ) {
-      return;
-    }
     try {
-      // 1) Reactivar (volver a PENDIENTE) citas futuras afectadas por este grupo
-      try {
-        await api.post(REACTIVAR_URL(row.id), {}); // backend no exige body especial
-      } catch (e: any) {
-        // Si no se puede reactivar (404 o permisos), continuamos con el borrado pero avisamos
-        const msg = e?.response?.data?.detail || null;
-        if (msg) pushToast(`Aviso: ${msg}`);
+      setError(null);
+      setReactivateTarget(row);
+      setReactivatePreview(null);
+      setReactivateLoading(true);
+      setReactivateOpen(true);
+
+      const res = await api.post<PreviewResponse>(
+        PREVIEW_REACTIVAR_URL(row.id),
+        {}
+      );
+      setReactivatePreview(res.data);
+    } catch (e: any) {
+      const msg =
+        e?.response?.data?.detail ||
+        "No se pudo obtener las citas que volveran a pendiente.";
+      setError(msg);
+      setReactivateOpen(false);
+      setReactivateTarget(null);
+      setReactivatePreview(null);
+    } finally {
+      setReactivateLoading(false);
+    }
+  };
+
+  const closeReactivateModal = () => {
+    if (reactivateLoading) return;
+    setReactivateOpen(false);
+    setReactivatePreview(null);
+    setReactivateTarget(null);
+  };
+
+  const confirmReactivateAndDelete = async () => {
+    if (!reactivateTarget) return;
+    try {
+      setReactivateLoading(true);
+
+      const res = await api.post<ReactivateResponse>(
+        REACTIVAR_URL(reactivateTarget.id),
+        {}
+      );
+      const total = res.data?.total_pendientes ?? 0;
+      const rows = res.data?.items || [];
+      if (rows.length > 0) {
+        downloadCSV(
+          `citas_reactivadas_${reactivateTarget.id}_${Date.now()}.csv`,
+          rows
+        );
       }
 
-      // 2) Borrar el grupo de bloqueo
-      await api.delete(`/bloqueos-dias/${row.id}/`);
+      await api.delete(`/bloqueos-dias/${reactivateTarget.id}/`);
+      await reloadBloqueos();
 
-      // 3) Actualizar UI
-      setBloqueos((prev) => prev.filter((x) => x.id !== row.id));
-      pushToast("Bloqueo eliminado y citas reactivadas (si aplicaba).");
+      pushToast(
+        total > 0
+          ? `Se reactivaron ${total} cita(s) y se elimino el bloqueo.`
+          : "Bloqueo eliminado."
+      );
     } catch (e: any) {
       setError(e?.response?.data?.detail || "No se pudo eliminar el bloqueo.");
+    } finally {
+      setReactivateLoading(false);
+      setReactivateOpen(false);
+      setReactivatePreview(null);
+      setReactivateTarget(null);
     }
   };
 
@@ -999,6 +1050,17 @@ export default function BloqueosAgenda() {
         />
       )}
 
+      {reactivateOpen && (
+        <ReactivateModal
+          isOpen={reactivateOpen}
+          loading={reactivateLoading}
+          preview={reactivatePreview}
+          bloqueo={reactivateTarget}
+          onClose={closeReactivateModal}
+          onConfirm={confirmReactivateAndDelete}
+        />
+      )}
+
       {/* === TOAST: contenedor */}
       <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex flex-col gap-2">
         {toasts.map((t) => (
@@ -1246,6 +1308,57 @@ function DayBlockList({
   );
 }
 
+function PreviewTable({ items }: { items: PreviewItem[] }) {
+  const limited = items.slice(0, 10);
+  const extra = items.length > 10 ? items.length - 10 : 0;
+
+  return (
+    <div className="rounded-xl border overflow-hidden">
+      <table className="w-full text-sm">
+        <thead className="bg-gray-50">
+          <tr>
+            <th className="text-left p-2">ID</th>
+            <th className="text-left p-2">Fecha</th>
+            <th className="text-left p-2">Hora</th>
+            <th className="text-left p-2">Paciente</th>
+            <th className="text-left p-2">Celular</th>
+            <th className="text-left p-2">Odontologo</th>
+          </tr>
+        </thead>
+        <tbody>
+          {limited.map((c) => (
+            <tr key={String(c.id_cita)} className="border-t">
+              <td className="p-2">{c.id_cita}</td>
+              <td className="p-2">{c.fecha}</td>
+              <td className="p-2">{safeHora(c.hora)}</td>
+              <td className="p-2">
+                {nombrePersona(
+                  c.id_paciente__id_usuario__primer_nombre,
+                  c.id_paciente__id_usuario__primer_apellido
+                ) || "-"}
+              </td>
+              <td className="p-2">{c.id_paciente__id_usuario__celular || "-"}</td>
+              <td className="p-2">
+                {nombrePersona(
+                  c.id_odontologo__id_usuario__primer_nombre,
+                  c.id_odontologo__id_usuario__primer_apellido
+                ) || "-"}
+              </td>
+            </tr>
+          ))}
+          {extra > 0 && (
+            <tr className="border-t">
+              <td colSpan={6} className="p-2 text-xs text-gray-500">
+                ... y {extra} cita(s) mas
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 /* ===================== Modal de Confirmación ===================== */
 function ConfirmModal({
   isOpen,
@@ -1277,61 +1390,17 @@ function ConfirmModal({
 
         <div className="p-4 space-y-3">
           {loading ? (
-            <div className="text-sm text-gray-500">Cargando preview…</div>
+            <div className="text-sm text-gray-500">Cargando preview...</div>
           ) : (
             <>
               <p className="text-sm text-gray-700">
-                Se han detectado <b>{total}</b> cita(s) futura(s) afectada(s)
-                por el bloqueo. Al confirmar, pasarán a estado{" "}
-                <b>mantenimiento</b> y deberán ser reprogramadas.
+                Se han detectado <b>{total}</b> cita(s) futura(s) afectada(s) por el
+                bloqueo. Al confirmar, pasaran a estado <b>mantenimiento</b> y
+                deberan ser reprogramadas.
               </p>
 
               {preview && preview.items.length > 0 ? (
-                <div className="rounded-xl border overflow-hidden">
-                  <table className="w-full text-sm">
-                    <thead className="bg-gray-50">
-                      <tr>
-                        <th className="text-left p-2">ID</th>
-                        <th className="text-left p-2">Fecha</th>
-                        <th className="text-left p-2">Hora</th>
-                        <th className="text-left p-2">Paciente</th>
-                        <th className="text-left p-2">Celular</th>
-                        <th className="text-left p-2">Odontólogo</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {preview.items.slice(0, 10).map((c) => (
-                        <tr key={String(c.id_cita)} className="border-t">
-                          <td className="p-2">{c.id_cita}</td>
-                          <td className="p-2">{c.fecha}</td>
-                          <td className="p-2">{safeHora(c.hora)}</td>
-                          <td className="p-2">
-                            {nombrePersona(
-                              c.id_paciente__id_usuario__primer_nombre,
-                              c.id_paciente__id_usuario__primer_apellido
-                            ) || "—"}
-                          </td>
-                          <td className="p-2">
-                            {c.id_paciente__id_usuario__celular || "—"}
-                          </td>
-                          <td className="p-2">
-                            {nombrePersona(
-                              c.id_odontologo__id_usuario__primer_nombre,
-                              c.id_odontologo__id_usuario__primer_apellido
-                            ) || "—"}
-                          </td>
-                        </tr>
-                      ))}
-                      {preview.items.length > 10 && (
-                        <tr className="border-t">
-                          <td colSpan={6} className="p-2 text-xs text-gray-500">
-                            … y {preview.items.length - 10} más
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
+                <PreviewTable items={preview.items} />
               ) : (
                 <div className="text-sm text-gray-500">
                   No se encontraron citas afectadas.
@@ -1341,7 +1410,6 @@ function ConfirmModal({
           )}
         </div>
 
-        {/* Footer sin botón de descarga */}
         <div className="p-4 border-t flex items-center justify-end gap-2">
           <button
             onClick={onClose}
@@ -1356,6 +1424,87 @@ function ConfirmModal({
             className="rounded-xl bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 inline-flex items-center gap-2 disabled:opacity-50"
           >
             Confirmar mantenimiento
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReactivateModal({
+  isOpen,
+  loading,
+  preview,
+  bloqueo,
+  onClose,
+  onConfirm,
+}: {
+  isOpen: boolean;
+  loading: boolean;
+  preview: PreviewResponse | null;
+  bloqueo: Bloqueo | null;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  if (!isOpen || !bloqueo) return null;
+
+  const total = preview?.total_afectadas ?? 0;
+  const rango =
+    bloqueo.fecha_inicio === bloqueo.fecha_fin
+      ? bloqueo.fecha_inicio
+      : `${bloqueo.fecha_inicio} al ${bloqueo.fecha_fin}`;
+  const descripcion = bloqueo.motivo ||
+    (bloqueo.id_odontologo ? 'Bloqueo por odontologo' : 'Bloqueo global');
+
+  return (
+    <div className="fixed inset-0 z-[60]">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div className="absolute left-1/2 top-1/2 w-full max-w-2xl -translate-x-1/2 -translate-y-1/2 rounded-2xl bg-white shadow-2xl">
+        <div className="p-4 border-b flex items-center gap-2">
+          <AlertTriangle className="text-amber-600" />
+          <h3 className="text-lg font-semibold">
+            Reactivar citas y eliminar bloqueo
+          </h3>
+        </div>
+
+        <div className="p-4 space-y-3">
+          {loading ? (
+            <div className="text-sm text-gray-500">Cargando preview...</div>
+          ) : (
+            <>
+              <p className="text-sm text-gray-700">
+                Vas a eliminar el bloqueo <b>{descripcion}</b> del rango
+                <b> {rango}</b>. {total > 0
+                  ? `Se reactivarán ${total} cita(s) en mantenimiento asociadas a este bloqueo.`
+                  : 'No se encontraron citas en mantenimiento para este bloqueo; solo se eliminara.'}
+              </p>
+
+              {preview && preview.items.length > 0 ? (
+                <PreviewTable items={preview.items} />
+              ) : (
+                <div className="text-sm text-gray-500">
+                  No hay citas en mantenimiento ligadas a este bloqueo.
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        <div className="p-4 border-t flex items-center justify-end gap-2">
+          <button
+            onClick={onClose}
+            disabled={loading}
+            className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50 inline-flex items-center gap-2 disabled:opacity-50"
+          >
+            <X className="size-4" />
+            Cancelar
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={loading}
+            className="rounded-xl bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-700 inline-flex items-center gap-2 disabled:opacity-50"
+          >
+            Reactivar y eliminar
           </button>
         </div>
       </div>

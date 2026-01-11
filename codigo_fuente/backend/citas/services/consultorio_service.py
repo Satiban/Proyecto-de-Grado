@@ -23,8 +23,8 @@ def _qFuturas(dtFrom):
 def previewMantenimientoConsultorio(idConsultorio: int, dtFrom=None):
     """
     Previsualiza cuántas citas FUTURAS (>= dtFrom) serán afectadas
-    al desactivar un consultorio (estado 'mantenimiento').
-    Excluye las ya canceladas.
+    al desactivar un consultorio (estado 'mantenimiento')
+    Excluye las ya canceladas
     """
     if dtFrom is None:
         dtFrom = timezone.now()
@@ -63,10 +63,7 @@ def previewMantenimientoConsultorio(idConsultorio: int, dtFrom=None):
 
 @transaction.atomic
 def applyMantenimientoConsultorio(consultorio: Consultorio, byRoleId: int, dtFrom=None):
-    """
-    Marca como 'mantenimiento' todas las citas FUTURAS del consultorio
-    (excluyendo canceladas). Setea huellas y devuelve batch + listado.
-    """
+    # Marca como 'mantenimiento' todas las citas FUTURAS del consultorio
     if dtFrom is None:
         dtFrom = timezone.now()
 

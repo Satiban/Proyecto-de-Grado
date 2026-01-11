@@ -1,10 +1,7 @@
 # fichas_medicas/models.py
 from django.db import models
 from django.db.models import Index
-from django.core.exceptions import ValidationError
-from django.core.validators import FileExtensionValidator, MinValueValidator
-from mimetypes import guess_type
-import hashlib
+from django.core.validators import MinValueValidator
 
 from citas.models import Cita
 
@@ -38,7 +35,6 @@ class FichaMedica(models.Model):
     def __str__(self):
         return f'Ficha Médica {self.id_ficha_medica} - Cita {self.id_cita_id}'
 
-    # Nota: NO bloqueamos crear/editar por estado de la cita.
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
 
@@ -49,7 +45,6 @@ def adjuntoUploadTo(instance, filename):
     fichaId = instance.id_ficha_medica_id or 'tmp'
     return f'archivos_adjuntos/ficha_{fichaId}/{filename}'
 
-# Alias para compatibilidad con migraciones antiguas que referencien el nombre snake_case
 adjunto_upload_to = adjuntoUploadTo
 
 
@@ -58,21 +53,21 @@ class ArchivoAdjunto(models.Model):
 
     id_ficha_medica = models.ForeignKey(
         FichaMedica,
-        on_delete=models.CASCADE,   # si se elimina la ficha, se eliminan sus adjuntos
+        on_delete=models.CASCADE,
         db_column='id_ficha_medica',
         related_name='archivos',
     )
 
-    archivo = models.FileField(
-        upload_to=adjuntoUploadTo,
-        null=True, blank=True,
-        db_column='archivo',
-        validators=[FileExtensionValidator(allowed_extensions=['pdf', 'jpg', 'jpeg', 'png', 'webp'])],
+    # Campo que almacena la URL encriptada
+    archivo_url = models.TextField(
+        null=True,
+        blank=True,
+        db_column='archivo_url',
+        help_text='URL encriptada del archivo en Cloudinary'
     )
-    mime_type = models.CharField(max_length=100, blank=True, db_column='mime_type')
-    nombre_original = models.TextField(blank=True, db_column='nombre_original')
 
-    # Entero normal (int4) como id_ficha_medica, con mínimo 0
+    nombre_original = models.TextField(blank=True, db_column='nombre_original')
+    mime_type = models.CharField(max_length=100, blank=True, db_column='mime_type')
     tamano_bytes = models.IntegerField(
         blank=True,
         null=True,
@@ -80,7 +75,9 @@ class ArchivoAdjunto(models.Model):
         validators=[MinValueValidator(0)]
     )
 
+    # Opcional: mantenlo si lo necesitas
     checksum_sha256 = models.CharField(max_length=64, blank=True, db_column='checksum_sha256')
+
     created_at = models.DateTimeField(auto_now_add=True, db_column='created_at')
     updated_at = models.DateTimeField(auto_now=True, db_column='updated_at')
 
@@ -95,36 +92,18 @@ class ArchivoAdjunto(models.Model):
     def __str__(self):
         return self.nombre_original or f'Adjunto {self.id_archivo_adjunto}'
 
-    def clean(self):
-        # Límite de 10 MB
-        if self.archivo and getattr(self.archivo, 'size', 0) > 10 * 1024 * 1024:
-            raise ValidationError({'archivo': 'El archivo supera el tamaño máximo de 10MB.'})
-
     def save(self, *args, **kwargs):
-        self.clean()
-
-        fileObj = self.archivo
-        if fileObj:
-            # Nombre original
-            if not self.nombre_original:
-                self.nombre_original = getattr(fileObj, 'name', '')
-
-            # Tamaño
-            self.tamano_bytes = getattr(fileObj, 'size', None)
-
-            # Mime type
-            if not self.mime_type:
-                mimeTypeGuess, _ = guess_type(getattr(fileObj, 'name', ''))
-                self.mime_type = mimeTypeGuess or ''
-
-            # SHA-256
-            try:
-                hasher = hashlib.sha256()
-                for chunk in fileObj.chunks():
-                    hasher.update(chunk)
-                self.checksum_sha256 = hasher.hexdigest()
-            except Exception:
-                # Por compatibilidad con storages que no implementan chunks()
-                pass
-
         super().save(*args, **kwargs)
+    
+    def set_url_encriptada(self, url_plana: str):
+        # Encripta y guarda la URL
+        from .utils import encriptar_url
+        if url_plana:
+            self.archivo_url = encriptar_url(url_plana)
+    
+    def get_url_desencriptada(self) -> str:
+        # Retorna la URL desencriptada
+        from .utils import desencriptar_url
+        if self.archivo_url:
+            return desencriptar_url(self.archivo_url)
+        return None

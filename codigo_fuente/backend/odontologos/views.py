@@ -33,6 +33,7 @@ from citas.services.odontologo_service import (
 from citas.services.bloqueo_service import (
     previewMantenimientoBloqueo,
     applyMantenimientoBloqueo,
+    previewReactivacionBloqueo,
     applyReactivacionBloqueo,
 )
 
@@ -59,7 +60,7 @@ class IsAdminOrDentist(BasePermission):
         return getattr(user, "id_rol_id", None) in (1, 3)
 
 
-# Admin o el propio odontólogo (dueño) pueden modificar ese recurso
+# Admin o el propio odontólogo pueden modificar ese recurso
 class IsOwnerDentistOrAdmin(BasePermission):
     def has_object_permission(self, request, view, obj):
         if request.method in SAFE_METHODS:
@@ -189,7 +190,6 @@ class OdontologoViewSet(viewsets.ModelViewSet):
         data = [d.isoformat() for d in out_dates]
         return Response(data, status=status.HTTP_200_OK)
 
-    # --- NUEVOS ENDPOINTS: mantenimiento de citas por desactivar/activar odontólogo ---
     @action(detail=True, methods=["post"], url_path="preview-mantenimiento")
     def preview_mantenimiento(self, request, pk=None):
         """PREVIEW: citas futuras que pasarían a estado 'mantenimiento' al desactivar odontólogo."""
@@ -200,6 +200,20 @@ class OdontologoViewSet(viewsets.ModelViewSet):
         except Exception:
             dt_from = timezone.now()
         data = previewMantenimientoOdontologo(int(pk), dt_from)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"], url_path="preview-horario-change")
+    def preview_horario_change(self, request, pk=None):
+        """
+        PREVIEW: Citas futuras afectadas por un CAMBIO en el horario del odontólogo.
+        No desactiva nada, solo analiza el impacto.
+        """
+        self._requireAdminRole(request)
+
+        from citas.services.odontologo_service import previewCambioHorarioOdontologo
+
+        nuevos_horarios = request.data.get("horarios") or []
+        data = previewCambioHorarioOdontologo(int(pk), nuevos_horarios, dtFrom=timezone.now())
         return Response(data, status=status.HTTP_200_OK)
 
     @transaction.atomic
@@ -259,6 +273,38 @@ class OdontologoViewSet(viewsets.ModelViewSet):
         }
 
         return Response(payload, status=status.HTTP_200_OK)
+    
+    @transaction.atomic
+    @action(detail=True, methods=["post"], url_path="apply-horario-change")
+    def apply_horario_change(self, request, pk=None):
+        """
+        APLICA: pone en 'mantenimiento' las citas FUTURAS afectadas por cambios en el horario del odontólogo.
+        Similar a apply_mantenimiento, pero sin desactivar al odontólogo.
+        """
+        self._requireAdminRole(request)
+
+        if not request.data.get("confirm"):
+            return Response({"detail": "Falta confirm"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            from citas.services.odontologo_service import applyMantenimientoOdontologo
+        except ImportError:
+            return Response({"detail": "Servicio no disponible"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        try:
+            by_role = userRole(request.user) or ROL_SUPERADMIN
+            result = applyMantenimientoOdontologo(int(pk), byRoleId=by_role, dtFrom=timezone.now())
+
+            payload = {
+                **result,
+                "odontologo": {"id_odontologo": int(pk)},
+            }
+            return Response(payload, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            print("Error en apply_horario_change:", e)
+            return Response({"detail": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 
 class EspecialidadViewSet(viewsets.ModelViewSet):
@@ -281,18 +327,6 @@ class OdontologoEspecialidadViewSet(viewsets.ModelViewSet):
 
 # ===================== Bloqueos agrupados por "grupo" (UUID) =====================
 class BloqueoDiaViewSet(viewsets.ViewSet):
-    """
-    Endpoints por 'grupo' de Bloqueo (rango de fechas):
-      - GET    /bloqueos-dias/?start=YYYY-MM-DD&end=YYYY-MM-DD&odontologo=<id|global>
-      - POST   /bloqueos-dias/   {fecha_inicio, fecha_fin, motivo?, recurrente_anual?, id_odontologo?}
-      - PATCH  /bloqueos-dias/{grupo}/
-      - DELETE /bloqueos-dias/{grupo}/
-      - POST   /bloqueos-dias/preview-mantenimiento/   (preview en seco)
-      - POST   /bloqueos-dias/create-and-apply/        (crear + aplicar si confirm=true)
-      - POST   /bloqueos-dias/{grupo}/preview-mantenimiento/
-      - POST   /bloqueos-dias/{grupo}/apply-mantenimiento/
-      - POST   /bloqueos-dias/{grupo}/apply-reactivar/
-    """
     permission_classes = [IsAuthenticated]
 
     def _is_admin(self, request): return getattr(request.user, "id_rol_id", None) == 1
@@ -322,9 +356,8 @@ class BloqueoDiaViewSet(viewsets.ViewSet):
         if self._is_admin(request):
             return qs
         if self._is_dent(request):
-            # Odontólogo ve globales + los suyos
+            # Odontólogo ve globales más los suyos
             return qs.filter(Q(id_odontologo__isnull=True) | Q(id_odontologo__id_usuario_id=request.user.id_usuario))
-        # otros roles: solo globales
         return qs.filter(id_odontologo__isnull=True)
 
     def _mmdd_q_for_range(self, start_date: _dt.date, end_date: _dt.date):
@@ -339,7 +372,7 @@ class BloqueoDiaViewSet(viewsets.ViewSet):
     def list(self, request):
         start = request.query_params.get("start")
         end = request.query_params.get("end")
-        odont = request.query_params.get("odontologo")  # 'global' o id numérico
+        odont = request.query_params.get("odontologo")
 
         qs = BloqueoDia.objects.select_related("id_odontologo", "id_odontologo__id_usuario")
         qs = self._restricted_qs(request, qs)
@@ -368,10 +401,10 @@ class BloqueoDiaViewSet(viewsets.ViewSet):
                 first_by_group[g] = (r["motivo"], bool(r["recurrente_anual"]))
 
         agg = (qs.values("grupo", "id_odontologo",
-                         nombre=F("id_odontologo__id_usuario__primer_nombre"),
-                         apellido=F("id_odontologo__id_usuario__primer_apellido"))
-                 .annotate(fecha_inicio=Min("fecha"), fecha_fin=Max("fecha"))
-                 .order_by("fecha_inicio", "fecha_fin"))
+                            nombre=F("id_odontologo__id_usuario__primer_nombre"),
+                            apellido=F("id_odontologo__id_usuario__primer_apellido"))
+                    .annotate(fecha_inicio=Min("fecha"), fecha_fin=Max("fecha"))
+                    .order_by("fecha_inicio", "fecha_fin"))
 
         out = []
         for row in agg:
@@ -417,7 +450,7 @@ class BloqueoDiaViewSet(viewsets.ViewSet):
 
         if self._is_dent(request):
             my_od = Odontologo.objects.filter(id_usuario_id=request.user.id_usuario) \
-                                      .values_list("id_odontologo", flat=True).first()
+                                        .values_list("id_odontologo", flat=True).first()
             if qs.exclude(id_odontologo_id=my_od).exists():
                 return Response({"detail": "No puedes editar bloqueos de otro odontólogo."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -451,11 +484,10 @@ class BloqueoDiaViewSet(viewsets.ViewSet):
 
         if self._is_dent(request):
             my_od = Odontologo.objects.filter(id_usuario_id=request.user.id_usuario) \
-                                      .values_list("id_odontologo", flat=True).first()
+                                        .values_list("id_odontologo", flat=True).first()
             if qs.exclude(id_odontologo_id=my_od).exists():
                 return Response({"detail": "No puedes borrar bloqueos de otro odontólogo."}, status=status.HTTP_403_FORBIDDEN)
 
-        # Reactivar antes de borrar (mantenimiento -> pendiente)
         params = self._get_group_params(qs)
         if params:
             applyReactivacionBloqueo(
@@ -472,17 +504,6 @@ class BloqueoDiaViewSet(viewsets.ViewSet):
     # ========= Collection-level: preview en seco =========
     @action(detail=False, methods=["post"], url_path="preview-mantenimiento")
     def preview_mantenimiento_collection(self, request):
-        """
-        Preview sin crear nada. Payload igual al de create():
-        {
-          "fecha_inicio": "YYYY-MM-DD",
-          "fecha_fin": "YYYY-MM-DD",
-          "motivo": "...",
-          "recurrente_anual": bool,
-          "id_odontologo": <int|null>
-        }
-        Devuelve total/por_estado/items de citas FUTURAS en estado pendiente/confirmada.
-        """
         ser = BloqueoGrupoSerializer(data=request.data, context={"request": request})
         ser.is_valid(raise_exception=True)
         payload = ser.validated_data  # no guarda
@@ -552,7 +573,6 @@ class BloqueoDiaViewSet(viewsets.ViewSet):
         if not qs.exists():
             return Response({"detail": "No encontrado."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Permisos: global -> solo admin; por odontólogo -> admin o dueño
         if qs.filter(id_odontologo__isnull=True).exists() and not self._is_admin(request):
             return Response({"detail": "Solo un administrador puede ver el preview de bloqueos globales."}, status=status.HTTP_403_FORBIDDEN)
         if self._is_dent(request):
@@ -573,14 +593,46 @@ class BloqueoDiaViewSet(viewsets.ViewSet):
         )
         return Response(data, status=status.HTTP_200_OK)
 
-    # ========= Detail: apply por grupo (mantenimiento) =========
+    # ========= Detail: preview reactivar (ya creado) =========
+    @action(detail=True, methods=["post"], url_path="preview-reactivar")
+    def preview_reactivar_detail(self, request, pk=None):
+        """
+        PREVIEW: lista las citas FUTURAS en MANTENIMIENTO que volverian a PENDIENTE
+        si se elimina o reactiva este bloqueo.
+        """
+        try:
+            group_id = UUID(str(pk))
+        except Exception:
+            return Response({"detail": "ID de grupo invalido."}, status=status.HTTP_400_BAD_REQUEST)
+
+        qs = self._restricted_qs(request, BloqueoDia.objects.filter(grupo=group_id))
+        if not qs.exists():
+            return Response({"detail": "No encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+        if qs.filter(id_odontologo__isnull=True).exists() and not self._is_admin(request):
+            return Response({"detail": "Solo un administrador puede ver previsualizaciones de bloqueos globales."}, status=status.HTTP_403_FORBIDDEN)
+        if self._is_dent(request):
+            my_od = Odontologo.objects.filter(id_usuario_id=request.user.id_usuario).values_list("id_odontologo", flat=True).first()
+            if qs.exclude(id_odontologo_id=my_od).exists():
+                return Response({"detail": "No puedes ver el preview de otro odontologo."}, status=status.HTTP_403_FORBIDDEN)
+
+        params = self._get_group_params(qs)
+        if not params:
+            return Response({"total_afectadas": 0, "por_estado": {}, "items": []})
+
+        data = previewReactivacionBloqueo(
+            fecha_inicio=params["fecha_inicio"],
+            fecha_fin=params["fecha_fin"],
+            id_odontologo=params["id_odontologo"],
+            recurrente_anual=params["recurrente_anual"],
+            dtFrom=timezone.now(),
+        )
+        return Response(data, status=status.HTTP_200_OK)
+
+    # ========= Apply por grupo=========
     @transaction.atomic
     @action(detail=True, methods=["post"], url_path="apply-mantenimiento")
     def apply_mantenimiento_detail(self, request, pk=None):
-        """
-        APLICA: pone en 'mantenimiento' las citas FUTURAS afectadas por ESTE grupo.
-        Solo ADMIN.
-        """
         self._require_admin(request)
         if not request.data.get("confirm"):
             return Response({"detail": "Falta confirm"}, status=status.HTTP_400_BAD_REQUEST)

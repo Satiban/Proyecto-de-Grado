@@ -27,6 +27,7 @@ import { useAuth } from "../../context/AuthContext";
 
 type PacienteFlat = {
   id_paciente: number;
+  id_usuario: number;
   cedula: string;
   primer_nombre?: string | null;
   segundo_nombre?: string | null;
@@ -440,6 +441,7 @@ export default function AgendarCitaOdontologo() {
   const [estado, setEstado] = useState<Estado>("pendiente");
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
+  const [showSuccess, setShowSuccess] = useState(false);
 
   /* ------- Obtener odóntologo de la sesión (me) ------- */
   useEffect(() => {
@@ -511,6 +513,7 @@ export default function AgendarCitaOdontologo() {
 
             return {
               id_paciente: Number(id_paciente),
+              id_usuario: Number(idUsuario),
               cedula,
               primer_nombre: p.primer_nombre ?? uDet?.primer_nombre ?? "",
               segundo_nombre: p.segundo_nombre ?? uDet?.segundo_nombre ?? "",
@@ -541,8 +544,13 @@ export default function AgendarCitaOdontologo() {
     const nom = fNombre.trim().toLowerCase();
     const ced = fCedula.trim();
 
+    // Obtener el id_usuario del odontólogo actual para excluirlo
+    const odoUsuarioId = usuario?.id_usuario ?? (usuario as any)?.usuario?.id_usuario ?? null;
+
     return pacientes
       .filter((p) => {
+        if (odoUsuarioId && p.id_usuario === odoUsuarioId) return false;
+        
         const fullName = `${p.primer_apellido ?? ""} ${
           p.segundo_apellido ?? ""
         } ${p.primer_nombre ?? ""} ${p.segundo_nombre ?? ""}`.toLowerCase();
@@ -555,7 +563,7 @@ export default function AgendarCitaOdontologo() {
           `${b.primer_apellido ?? ""} ${b.segundo_apellido ?? ""}`
         )
       );
-  }, [pacientes, fNombre, fCedula]);
+  }, [pacientes, fNombre, fCedula, usuario]);
 
   const total = pacientesFiltrados.length;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -730,7 +738,7 @@ export default function AgendarCitaOdontologo() {
         }
       }
 
-      // ⬇️ Ocultar horas pasadas si la fecha es hoy
+      // Ocultar horas pasadas si la fecha es hoy
       const dSel = fromISO(dateISO);
       const now = new Date();
       const isToday =
@@ -883,7 +891,12 @@ export default function AgendarCitaOdontologo() {
         estado, // para staff/odo/admin se permite
       };
       await api.post(`/citas/`, payload);
-      navigate("/odontologo/agenda");
+      setShowSuccess(true);
+      setTimeout(() => {
+        navigate("/odontologo/agenda", {
+          state: { fechaNueva: fecha },
+        });
+      }, 1000);
     } catch (err: any) {
       const data = err?.response?.data;
       const msg =
@@ -931,6 +944,15 @@ export default function AgendarCitaOdontologo() {
 
   return (
     <div className="space-y-6">
+      {/* Toast éxito */}
+      {showSuccess && (
+        <div className="fixed top-4 right-4 z-50 animate-in fade-in zoom-in duration-200">
+          <div className="rounded-xl bg-green-600 text-white shadow-lg px-4 py-3">
+            <div className="font-semibold">¡Cita creada correctamente!</div>
+            <div className="text-sm text-white/90">Redirigiendo…</div>
+          </div>
+        </div>
+      )}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         {/* Icono + título alineados y con tamaño similar */}
         <h1 className="text-2xl font-bold flex items-center gap-2">
@@ -1199,7 +1221,7 @@ export default function AgendarCitaOdontologo() {
                   ? { blocked: true, motivo: bloqueosMap[iso].motivo || null }
                   : undefined
               }
-              dayBadge={dayBadge} // NUEVO: contador de citas
+              dayBadge={dayBadge} // contador de citas
               disabledAll={!odoId}
               viewYM={viewYM}
               onViewYMChange={setViewYM}

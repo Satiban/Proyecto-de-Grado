@@ -1,4 +1,24 @@
 @import 'tailwindcss';
+
+/* Animaciones personalizadas para StarBorder */
+@keyframes star-movement-horizontal {
+  0% {
+    transform: translateX(-100%);
+    opacity: 0;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+}
+
+.animate-star-movement-top {
+  animation: star-movement-horizontal 4s linear infinite alternate;
+}
+
 /* Escala tipográfica para escritorios grandes */
 @media (min-width: 1440px) {
   html { font-size: 17px; }  /* ~106% */

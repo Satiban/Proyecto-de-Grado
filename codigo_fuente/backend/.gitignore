@@ -1,0 +1,52 @@
+# === ENTORNO VIRTUAL Y VARIABLES DE ENTORNO ===
+venv/
+.env
+.env.*
+
+# === ARCHIVOS PYTHON COMPILADOS ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# === BASES DE DATOS LOCALES ===
+*.sqlite3
+*.db
+
+# === MIGRACIONES ===
+# Se suben las migraciones .py (estructura de BD)
+# pero no los archivos temporales de Python
+**/migrations/__pycache__/
+**/migrations/*.pyc
+
+# === ARCHIVOS ESTÁTICOS Y MULTIMEDIA ===
+# staticfiles se genera automáticamente con collectstatic
+staticfiles/
+# media contiene archivos subidos (fotos, adjuntos)
+media/**
+!media/.gitkeep
+!media/**/.gitkeep
+
+# === LOGS Y ARCHIVOS TEMPORALES ===
+*.log
+*.pot
+*.mo
+.DS_Store
+*.bak
+*.swp
+*.swo
+
+# === CONFIGURACIÓN LOCAL DE EDITOR ===
+.vscode/
+.idea/
+
+# === ARCHIVOS DE DISTRIBUCIÓN Y PAQUETES ===
+dist/
+build/
+*.egg
+*.egg-info/
+.eggs/
+
+# === ARCHIVOS DE PRUEBA Y OTROS TEMPORALES ===
+test_*.py
+*.tmp

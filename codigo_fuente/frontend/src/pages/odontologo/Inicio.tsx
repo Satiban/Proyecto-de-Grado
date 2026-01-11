@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState, Fragment } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../../api/axios";
-import { Eye, Pencil } from "lucide-react";
+import { Eye, Pencil, Stethoscope } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 
 /* ===== Tipos ===== */
@@ -23,6 +23,11 @@ type Cita = {
   paciente_nombre?: string | null;
   paciente_cedula?: string | null;
   consultorio?: { id_consultorio: number; numero?: string | null } | null;
+  pago?: {
+    id_pago_cita: number;
+    estado_pago: "pendiente" | "pagado" | "reembolsado";
+    monto?: string;
+  } | null;
 };
 
 /* ===== Helpers de fecha ===== */
@@ -112,28 +117,80 @@ function firstNameLastNameFromUser(u: any): string {
 }
 
 /* ===== Acciones por cita ===== */
-function AccionesCita({ id }: { id: number }) {
+function AccionesCita({ cita }: { cita: Cita }) {
+  const { id_cita, estado } = cita;
+
   return (
     <div className="flex items-center justify-center gap-2">
-      {/* Ver → ahora apunta a /ver */}
-      <Link
-        to={`/odontologo/citas/${id}/ver`}
-        className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
-        title="Ver detalles"
-      >
-        <Eye className="size-4" />
-        Ver
-      </Link>
+      {/* Pendiente - solo Ver */}
+      {estado === "pendiente" && (
+        <Link
+          to={`/odontologo/citas/${id_cita}/ver`}
+          className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
+          title="Ver detalles"
+        >
+          <Eye className="size-4" />
+          Ver
+        </Link>
+      )}
 
-      {/* Editar (ya estaba bien) */}
-      <Link
-        to={`/odontologo/citas/${id}/editar`}
-        className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
-        title="Editar"
-      >
-        <Pencil className="size-4" />
-        Editar
-      </Link>
+      {/* Confirmada - Ver y Atender */}
+      {estado === "confirmada" && (
+        <>
+          <Link
+            to={`/odontologo/citas/${id_cita}/ver`}
+            className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
+            title="Ver detalles"
+          >
+            <Eye className="size-4" />
+            Ver
+          </Link>
+          <Link
+            to={`/odontologo/citas/${id_cita}/atencion`}
+            className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 bg-emerald-600 text-white hover:bg-emerald-700"
+            title="Atender cita"
+          >
+            <Stethoscope className="size-4" />
+            Atender
+          </Link>
+        </>
+      )}
+
+      {/* Cancelada - solo Ver */}
+      {estado === "cancelada" && (
+        <Link
+          to={`/odontologo/citas/${id_cita}/ver`}
+          className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
+          title="Ver detalles"
+        >
+          <Eye className="size-4" />
+          Ver
+        </Link>
+      )}
+
+      {/* Mantenimiento - solo Editar */}
+      {estado === "mantenimiento" && (
+        <Link
+          to={`/odontologo/citas/${id_cita}/editar`}
+          className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
+          title="Editar"
+        >
+          <Pencil className="size-4" />
+          Editar
+        </Link>
+      )}
+
+      {/* Realizada - solo Ver */}
+      {estado === "realizada" && (
+        <Link
+          to={`/odontologo/citas/${id_cita}/ver`}
+          className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
+          title="Ver detalles"
+        >
+          <Eye className="size-4" />
+          Ver
+        </Link>
+      )}
     </div>
   );
 }
@@ -216,40 +273,34 @@ export default function OdoInicio() {
     return map;
   }, [citasHoy]);
 
-  /* ===== Fetch citas del día (solo del odontólogo) ===== */
+  /* ===== Fetch citas del día + KPIs (semana y mes) ===== */
   useEffect(() => {
     if (!idOdontologo) return;
+    const controller = new AbortController();
+
     (async () => {
       setLoading(true);
       try {
-        const res = await api.get("/citas/", {
+        const now = new Date();
+
+        // --- Citas de hoy ---
+        const resHoy = await api.get("/citas/", {
           params: {
             fecha: hoyISO,
             id_odontologo: idOdontologo,
             ordering: "hora",
             page_size: 1000,
           },
+          signal: controller.signal,
         });
-        const data: Cita[] = res.data?.results ?? res.data ?? [];
-        setCitasHoy(data);
-        setKpiHoy(Array.isArray(data) ? data.length : 0);
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, [hoyISO, idOdontologo]);
+        const dHoy: Cita[] = resHoy.data?.results ?? resHoy.data ?? [];
+        setCitasHoy(dHoy);
+        setKpiHoy(dHoy.length);
 
-  /* ===== Fetch KPIs (semana y mes) del odontólogo) ===== */
-  useEffect(() => {
-    if (!idOdontologo) return;
-    (async () => {
-      try {
-        const now = new Date();
-
-        // Semana
+        // --- KPIs semana ---
         const fromW = toISODate(startOfWeek(now));
         const toW = toISODate(endOfWeek(now));
-        const rW = await api.get("/citas/", {
+        const resW = await api.get("/citas/", {
           params: {
             start: fromW,
             end: toW,
@@ -257,14 +308,15 @@ export default function OdoInicio() {
             page_size: 1000,
             ordering: "fecha,hora",
           },
+          signal: controller.signal,
         });
-        const dW: Cita[] = rW.data?.results ?? rW.data ?? [];
-        setKpiSemana(Array.isArray(dW) ? dW.length : 0);
+        const dW: Cita[] = resW.data?.results ?? resW.data ?? [];
+        setKpiSemana(dW.length);
 
-        // Mes
+        // --- KPIs mes ---
         const fromM = toISODate(startOfMonth(now));
         const toM = toISODate(endOfMonth(now));
-        const rM = await api.get("/citas/", {
+        const resM = await api.get("/citas/", {
           params: {
             start: fromM,
             end: toM,
@@ -272,15 +324,23 @@ export default function OdoInicio() {
             page_size: 2000,
             ordering: "fecha,hora",
           },
+          signal: controller.signal,
         });
-        const dM: Cita[] = rM.data?.results ?? rM.data ?? [];
-        setKpiMes(Array.isArray(dM) ? dM.length : 0);
-      } catch {
-        setKpiSemana(0);
-        setKpiMes(0);
+        const dM: Cita[] = resM.data?.results ?? resM.data ?? [];
+        setKpiMes(dM.length);
+      } catch (err: any) {
+        if (err.name !== "CanceledError") {
+          console.error(err);
+          setKpiSemana(0);
+          setKpiMes(0);
+        }
+      } finally {
+        setLoading(false);
       }
     })();
-  }, [idOdontologo]);
+
+    return () => controller.abort();
+  }, [hoyISO, idOdontologo]);
 
   const estadoPill = (estado: Cita["estado"]) => {
     const norm = normalizeEstado(estado);
@@ -292,7 +352,7 @@ export default function OdoInicio() {
         : norm === "realizada"
         ? "bg-blue-100 text-blue-800 border-blue-200"
         : norm === "mantenimiento"
-        ? "bg-violet-100 text-violet-800 border-violet-200" // 👈 aquí
+        ? "bg-violet-100 text-violet-800 border-violet-200"
         : "bg-red-100 text-red-800 border-red-200";
 
     return (
@@ -300,6 +360,45 @@ export default function OdoInicio() {
         className={`inline-block text-xs px-2 py-1 rounded-full border ${cls}`}
       >
         {estadoLabel(estado)}
+      </span>
+    );
+  };
+
+  const estadoPagoPill = (cita: Cita) => {
+    // Si la cita no está realizada, no aplica mostrar pago
+    if (cita.estado !== "realizada") {
+      return <span className="text-gray-400 text-xs">—</span>;
+    }
+
+    // Si no hay pago registrado, mostrar como Pendiente
+    if (!cita.pago) {
+      return (
+        <span className="inline-block text-xs px-2 py-1 rounded-full border bg-amber-100 text-amber-800 border-amber-200">
+          Pendiente
+        </span>
+      );
+    }
+
+    const estado = cita.pago.estado_pago;
+    const cls =
+      estado === "pagado"
+        ? "bg-emerald-100 text-emerald-800 border-emerald-200"
+        : estado === "reembolsado"
+        ? "bg-red-100 text-red-800 border-red-200"
+        : "bg-amber-100 text-amber-800 border-amber-200";
+
+    const label =
+      estado === "pagado"
+        ? "Pagado"
+        : estado === "reembolsado"
+        ? "Reembolsado"
+        : "Pendiente";
+
+    return (
+      <span
+        className={`inline-block text-xs px-2 py-1 rounded-full border ${cls}`}
+      >
+        {label}
       </span>
     );
   };
@@ -359,7 +458,8 @@ export default function OdoInicio() {
                   <th className="py-2 px-3 text-center">Paciente</th>
                   <th className="py-2 px-3 text-center">Motivo</th>
                   <th className="py-2 px-3 text-center">Consultorio</th>
-                  <th className="py-2 px-3 text-center">Estado</th>
+                  <th className="py-2 px-3 text-center">Estado Cita</th>
+                  <th className="py-2 px-3 text-center">Estado Pago</th>
                   <th className="py-2 px-3 text-center w-40">Acciones</th>
                 </tr>
               </thead>
@@ -401,7 +501,10 @@ export default function OdoInicio() {
                             {estadoPill(first.estado)}
                           </td>
                           <td className="py-2 px-3 text-center">
-                            <AccionesCita id={first.id_cita} />
+                            {estadoPagoPill(first)}
+                          </td>
+                          <td className="py-2 px-3 text-center">
+                            <AccionesCita cita={first} />
                           </td>
                         </tr>
 
@@ -430,7 +533,10 @@ export default function OdoInicio() {
                               {estadoPill(cita.estado)}
                             </td>
                             <td className="py-2 px-3 text-center">
-                              <AccionesCita id={cita.id_cita} />
+                              {estadoPagoPill(cita)}
+                            </td>
+                            <td className="py-2 px-3 text-center">
+                              <AccionesCita cita={cita} />
                             </td>
                           </tr>
                         ))}
@@ -446,6 +552,7 @@ export default function OdoInicio() {
                       <td className="py-2 px-3 text-center">—</td>
                       <td className="py-2 px-3 text-center">—</td>
                       <td className="py-2 px-3 text-center">—</td>
+                      <td className="py-2 px-3 text-center">—</td>
                     </tr>
                   );
                 })}
@@ -453,10 +560,12 @@ export default function OdoInicio() {
             </table>
           </div>
 
-          <p className="text-xs text-gray-500 mt-3 px-2 pb-4">
-            * Agenda fija de 09:00 a 21:00 (intervalos de 1h). Las 13:00–15:00
-            no se muestran.
-          </p>
+          <div className="border-t bg-gray-50">
+            <p className="text-xs text-gray-500 p-4 pt-3">
+              * Agenda fija de 09:00 a 21:00 (intervalos de 1h). Las 13:00–15:00
+              no se muestran.
+            </p>
+          </div>
         </div>
       </section>
     </div>

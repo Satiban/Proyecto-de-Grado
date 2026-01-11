@@ -4,11 +4,15 @@ import { Link, useNavigate } from "react-router-dom";
 import axios from "axios";
 import { api } from "../../api/axios";
 import { Eye, EyeOff, Loader2, User, ArrowLeft } from "lucide-react";
+import { useFotoPerfil } from "../../hooks/useFotoPerfil";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:8000/api/v1";
 const PRIMARY = "#0070B7";
 // Arriba, junto a las demás constantes
 const ANT_OTROS_ID = Number(import.meta.env.VITE_ANT_OTROS_ID || NaN);
+// Límites para antecedentes
+const MAX_PROP = 8;
+const MAX_FAM = 8;
 
 /* =========================
    Tipos y helpers del módulo
@@ -22,7 +26,7 @@ type FamiliarRow = {
 };
 
 type AntecedenteOpt = { id_antecedente: number; nombre: string };
-const OTHER = "__other__" as const; // sentinel para opción "Otro (especificar…)"
+const OTHER = "__other__" as const;
 
 const makeId = (() => {
   let c = 0;
@@ -52,17 +56,64 @@ function isValidCedulaEC(ci: string): boolean {
 function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email);
 }
-function atLeastSixMonthsOld(isoDate: string): boolean {
-  if (!isoDate) return false;
+
+// Calcular fecha mínima permitida (6 meses atrás desde hoy)
+function getFechaMin6Meses(): string {
+  const hoy = new Date();
+  hoy.setMonth(hoy.getMonth() - 6);
+  return hoy.toISOString().split("T")[0];
+}
+
+function validateBirthDate(isoDate: string): {
+  valid: boolean;
+  message?: string;
+  isMinor?: boolean;
+} {
+  if (!isoDate) return { valid: false };
+
   const birth = new Date(isoDate + "T00:00:00");
-  if (Number.isNaN(birth.getTime())) return false;
+  if (Number.isNaN(birth.getTime()))
+    return { valid: false, message: "Fecha inválida" };
+
   const now = new Date();
+
+  // No antes de 1930
+  if (birth.getFullYear() < 1930) {
+    return { valid: false, message: "La fecha no puede ser anterior a 1930" };
+  }
+
+  // No fechas futuras
+  if (birth > now) {
+    return { valid: false, message: "La fecha no puede ser futura" };
+  }
+
+  // Calcular edad
+  let age = now.getFullYear() - birth.getFullYear();
+  const monthDiff = now.getMonth() - birth.getMonth();
+  if (monthDiff < 0 || (monthDiff === 0 && now.getDate() < birth.getDate())) {
+    age--;
+  }
+
+  // Al menos 6 meses
   const sixMonthsAgo = new Date(
     now.getFullYear(),
     now.getMonth() - 6,
     now.getDate()
   );
-  return birth <= sixMonthsAgo;
+  if (birth > sixMonthsAgo) {
+    return { valid: false, message: "Debe tener al menos 6 meses de edad" };
+  }
+
+  // Es menor de edad
+  if (age < 18) {
+    return {
+      valid: true,
+      message: "Fecha válida - Paciente menor de edad",
+      isMinor: true,
+    };
+  }
+
+  return { valid: true, message: "Fecha válida", isMinor: false };
 }
 function fullNameTwoWords(name: string): boolean {
   return /^\s*\S+\s+\S+(\s+\S+)*\s*$/.test(name);
@@ -75,7 +126,7 @@ function useDebouncedCallback(cb: () => void, delay = 400) {
   };
 }
 function isStrongPassword(pwd: string) {
-  return /^(?=.*[A-Z])(?=.*\d).{6,}$/.test(pwd);
+  return /^(?=.*[A-Z])(?=.*\d).{8,}$/.test(pwd);
 }
 
 /* =========================
@@ -185,6 +236,7 @@ export default function PacientesNuevo() {
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
   const [loading, setLoading] = useState(false);
   const [errorTop, setErrorTop] = useState("");
+  const { subirFoto } = useFotoPerfil();
 
   // Toast de éxito
   const [showSuccess, setShowSuccess] = useState(false);
@@ -217,11 +269,17 @@ export default function PacientesNuevo() {
       | "sexo"
       | "tipo_sangre"
       | "contacto_emergencia_nom"
-      | "contacto_emergencia_cel",
+      | "contacto_emergencia_cel"
+      | "contacto_emergencia_email",
       string
     >
   >;
   const [errors, setErrors] = useState<Errors>({});
+
+  // Control de menores de edad
+  const [isMinor, setIsMinor] = useState(false);
+  const [birthDateMsg, setBirthDateMsg] = useState<string | null>(null);
+  const [birthDateValid, setBirthDateValid] = useState<boolean | null>(null);
 
   const [showPass1, setShowPass1] = useState(false);
   const [showPass2, setShowPass2] = useState(false);
@@ -249,7 +307,7 @@ export default function PacientesNuevo() {
   const pwd2 = personal.password2 ?? "";
 
   // Criterios
-  const pwdHasMin = pwd.length >= 6;
+  const pwdHasMin = pwd.length >= 8;
   const pwdHasUpper = /[A-Z]/.test(pwd);
   const pwdHasDigit = /\d/.test(pwd);
   const pwdStrong = pwdHasMin && pwdHasUpper && pwdHasDigit;
@@ -300,6 +358,7 @@ export default function PacientesNuevo() {
   const [emergencia, setEmergencia] = useState({
     contacto_emergencia_nom: "",
     contacto_emergencia_cel: "",
+    contacto_emergencia_email: "",
     parSelect: "", // hijos|padres|hermanos|abuelos|esposos|otros
   });
 
@@ -552,6 +611,25 @@ export default function PacientesNuevo() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [personal.celular]);
 
+  // Validación en vivo de fecha de nacimiento
+  useEffect(() => {
+    if (personal.fecha_nacimiento) {
+      const validation = validateBirthDate(personal.fecha_nacimiento);
+      setBirthDateValid(validation.valid);
+      setBirthDateMsg(validation.message || null);
+      setIsMinor(validation.isMinor || false);
+
+      // Limpiar errores si es válida
+      if (validation.valid) {
+        setErrors((prev) => ({ ...prev, fecha_nacimiento: "" }));
+      }
+    } else {
+      setBirthDateValid(null);
+      setBirthDateMsg(null);
+      setIsMinor(false);
+    }
+  }, [personal.fecha_nacimiento]);
+
   /* ------- Validaciones por paso ------- */
   const validateStep1 = () => {
     const newErrors: Errors = {};
@@ -565,22 +643,39 @@ export default function PacientesNuevo() {
     if (!/^\d{10}$/.test(personal.cedula) || !isValidCedulaEC(personal.cedula))
       newErrors.cedula = "Cédula inválida.";
 
-    if (!/^09\d{8}$/.test(personal.celular))
-      newErrors.celular = "El celular debe iniciar con 09 y tener 10 dígitos.";
+    // Validar fecha de nacimiento
+    if (!personal.fecha_nacimiento) {
+      newErrors.fecha_nacimiento = "La fecha de nacimiento es obligatoria.";
+    } else {
+      const validation = validateBirthDate(personal.fecha_nacimiento);
+      if (!validation.valid) {
+        newErrors.fecha_nacimiento = validation.message || "Fecha inválida";
+      }
+    }
+
+    // Email y celular opcionales para menores, obligatorios para mayores
+    if (!isMinor) {
+      // Mayor de edad: email y celular obligatorios
+      if (!/^09\d{8}$/.test(personal.celular))
+        newErrors.celular =
+          "El celular debe iniciar con 09 y tener 10 dígitos.";
+      if (!isValidEmail(personal.email)) newErrors.email = "Correo inválido.";
+    } else {
+      // Menor de edad: validar solo si se proporcionaron
+      if (personal.celular && !/^09\d{8}$/.test(personal.celular))
+        newErrors.celular =
+          "El celular debe iniciar con 09 y tener 10 dígitos.";
+      if (personal.email && !isValidEmail(personal.email))
+        newErrors.email = "Correo inválido.";
+    }
 
     // Mensajes de unicidad
     if (cedulaExists === true) newErrors.cedula = "Cédula ya registrada.";
-    if (!isValidEmail(personal.email)) newErrors.email = "Correo inválido.";
     if (emailExists === true) newErrors.email = "Correo ya registrado.";
     if (celularExists === true) newErrors.celular = "Celular ya registrado.";
 
-    if (!personal.fecha_nacimiento)
-      newErrors.fecha_nacimiento = "La fecha de nacimiento es obligatoria.";
-    else if (!atLeastSixMonthsOld(personal.fecha_nacimiento))
-      newErrors.fecha_nacimiento = "Debe tener al menos 6 meses de edad.";
-
     if (!isStrongPassword(personal.password))
-      newErrors.password = "Mín. 6 car., al menos 1 mayúscula y 1 número.";
+      newErrors.password = "Mín. 8 car., al menos 1 mayúscula y 1 número.";
     if (personal.password2 !== personal.password)
       newErrors.password2 = "Las contraseñas no coinciden.";
 
@@ -621,6 +716,20 @@ export default function PacientesNuevo() {
     if (!/^09\d{8}$/.test(emergencia.contacto_emergencia_cel))
       newErrors.contacto_emergencia_cel =
         "El celular debe iniciar con 09 y tener 10 dígitos.";
+
+    // Email de emergencia: obligatorio solo para menores
+    if (isMinor) {
+      const emailEmerg = emergencia.contacto_emergencia_email.trim();
+      if (!emailEmerg || !isValidEmail(emailEmerg))
+        newErrors.contacto_emergencia_email =
+          "Correo obligatorio para menores.";
+    } else {
+      // Mayor: validar solo si se proporcionó
+      const emailEmerg = emergencia.contacto_emergencia_email.trim();
+      if (emailEmerg && !isValidEmail(emailEmerg))
+        newErrors.contacto_emergencia_email = "Correo inválido.";
+    }
+
     if (!emergencia.parSelect) {
       newErrors.contacto_emergencia_nom =
         newErrors.contacto_emergencia_nom || "";
@@ -682,26 +791,43 @@ export default function PacientesNuevo() {
         id_rol: "2",
         sexo: clinico.sexo, // M | F
         tipo_sangre: clinico.tipo_sangre,
-      }).forEach(([k, v]) => fd.append(k, String(v)));
+      }).forEach(([k, v]) => {
+        // Solo agregar campos no vacíos (excepto password que ya se maneja aparte)
+        if (k === "celular" || k === "email") {
+          // Si celular o email están vacíos, no los agregar al FormData
+          // Esto hará que el backend los trate como null
+          if (v && String(v).trim()) {
+            fd.append(k, String(v));
+          }
+        } else if (k !== "password") {
+          fd.append(k, String(v));
+        }
+      });
       fd.delete("password2");
-      fd.append("activo", "true"); // importante: activar usuario
-      if (foto) fd.append("foto", foto);
+      fd.append("activo", "true");
+      fd.append("password", personal.password);
 
       const userRes = await api.post(`/usuarios/`, fd, {
         headers: { "Content-Type": "multipart/form-data" },
       });
       const id_usuario = userRes.data.id_usuario;
-
+      
+      if (foto) {
+        await subirFoto(id_usuario, foto);
+      }
       // 2) Crear Paciente
       const pacRes = await api.post(`/pacientes/`, {
         id_usuario,
         contacto_emergencia_nom: emergencia.contacto_emergencia_nom,
         contacto_emergencia_cel: emergencia.contacto_emergencia_cel,
+        // Solo enviar email si tiene valor
+        contacto_emergencia_email:
+          emergencia.contacto_emergencia_email.trim() || null,
         contacto_emergencia_par: emergencia.parSelect,
       });
       const id_paciente = pacRes.data.id_paciente ?? pacRes.data.id;
 
-      // 3) Registrar ENFERMEDADES PROPIAS -> relacion_familiar = 'propio'
+      // 3) Registrar ENFERMEDADES PROPIAS
       for (const row of propias) {
         if (id_paciente && row.sel) {
           await api.post(`/paciente-antecedentes/`, {
@@ -712,7 +838,7 @@ export default function PacientesNuevo() {
         }
       }
 
-      // 4) Registrar ANTECEDENTES FAMILIARES -> padres|hermanos|abuelos
+      // 4) Registrar ANTECEDENTES FAMILIARES
       for (const row of familiares) {
         if (id_paciente && row.sel) {
           await api.post(`/paciente-antecedentes/`, {
@@ -749,6 +875,7 @@ export default function PacientesNuevo() {
     relacion,
     onChangeRelacion,
     options,
+    selectedIds = [],
   }: {
     value: number | "" | typeof OTHER;
     onChangeSel: (val: number | "" | typeof OTHER) => void;
@@ -757,35 +884,39 @@ export default function PacientesNuevo() {
     onChangeRelacion?: (rel: Exclude<FamiliarRel, "propio">) => void;
     options: AntecedenteOpt[];
     onAskAdd: () => void;
+    selectedIds?: (number | "")[];
   }) => {
     return (
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-        <div className="flex gap-2">
-          <select
-            className="w-full rounded-lg border border-gray-300 px-3 py-2"
-            value={value === "" ? "" : String(value)}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (v === OTHER) onChangeSel(OTHER);
-              else onChangeSel(v === "" ? "" : Number(v));
-            }}
-          >
-            <option value="">Selecciona antecedente…</option>
-            {options.map((opt) => (
+      <div className="flex flex-col sm:flex-row gap-2 sm:max-w-md">
+        <select
+          className="w-full sm:w-64 rounded-lg border border-gray-300 px-3 py-2"
+          value={value === "" ? "" : String(value)}
+          onChange={(e) => {
+            const v = e.target.value;
+            if (v === OTHER) onChangeSel(OTHER);
+            else onChangeSel(v === "" ? "" : Number(v));
+          }}
+        >
+          <option value="">Selecciona antecedente…</option>
+          {options.map((opt) => {
+            const estaSeleccionado = selectedIds.includes(opt.id_antecedente);
+            return (
               <option
                 key={opt.id_antecedente}
                 value={String(opt.id_antecedente)}
+                disabled={estaSeleccionado}
               >
                 {opt.nombre}
+                {estaSeleccionado ? " (ya seleccionado)" : ""}
               </option>
-            ))}
-            <option value={OTHER}>Otro (especificar…)</option>
-          </select>
-        </div>
+            );
+          })}
+          <option value={OTHER}>Otro (especificar…)</option>
+        </select>
 
         {withRelacion && (
           <select
-            className="w-full rounded-lg border border-gray-300 px-3 py-2"
+            className="w-full sm:w-40 rounded-lg border border-gray-300 px-3 py-2"
             value={relacion}
             onChange={(e) =>
               onChangeRelacion?.(
@@ -1067,7 +1198,12 @@ export default function PacientesNuevo() {
 
               <div>
                 <label className="block text-sm font-medium text-gray-700">
-                  Celular
+                  Celular{" "}
+                  {isMinor && (
+                    <span className="text-gray-500 font-normal">
+                      (Si el paciente es menor de edad, puede dejar en blanco)
+                    </span>
+                  )}
                 </label>
                 <input
                   name="celular"
@@ -1079,7 +1215,7 @@ export default function PacientesNuevo() {
                   inputMode="numeric"
                   maxLength={10}
                   pattern="^09\d{8}$"
-                  required
+                  required={!isMinor}
                 />
                 {errors.celular && (
                   <p className="mt-1 text-sm text-red-600">{errors.celular}</p>
@@ -1100,7 +1236,12 @@ export default function PacientesNuevo() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700">
-                  Correo
+                  Correo{" "}
+                  {isMinor && (
+                    <span className="text-gray-500 font-normal">
+                      (Si el paciente es menor de edad, puede dejar en blanco)
+                    </span>
+                  )}
                 </label>
                 <input
                   type="email"
@@ -1109,7 +1250,7 @@ export default function PacientesNuevo() {
                   onChange={(e) => onChange(setPersonal, e)}
                   onBlur={handleEmailBlur}
                   className={inputClass("email")}
-                  required
+                  required={!isMinor}
                 />
                 {errors.email && (
                   <p className="mt-1 text-sm text-red-600">{errors.email}</p>
@@ -1133,10 +1274,27 @@ export default function PacientesNuevo() {
                   name="fecha_nacimiento"
                   value={personal.fecha_nacimiento}
                   onChange={(e) => onChange(setPersonal, e)}
-                  className={inputClass("fecha_nacimiento")}
+                  className={`w-full rounded-lg border px-4 py-2 ${
+                    birthDateValid === false
+                      ? "border-red-500 focus:ring-2 focus:ring-red-500"
+                      : birthDateValid === true
+                      ? "border-green-500 focus:ring-2 focus:ring-green-500"
+                      : "border-gray-300"
+                  }`}
+                  min="1930-01-01"
+                  max={getFechaMin6Meses()}
                   required
                 />
-                {errors.fecha_nacimiento && (
+                {birthDateMsg && (
+                  <p
+                    className={`mt-1 text-sm ${
+                      birthDateValid ? "text-green-600" : "text-red-600"
+                    }`}
+                  >
+                    {birthDateMsg}
+                  </p>
+                )}
+                {errors.fecha_nacimiento && !birthDateMsg && (
                   <p className="mt-1 text-sm text-red-600">
                     {errors.fecha_nacimiento}
                   </p>
@@ -1188,7 +1346,7 @@ export default function PacientesNuevo() {
                 {/* Criterios en vivo */}
                 <ul className="mt-2 text-xs space-y-1">
                   <li className={hintColor(pwdHasMin, pwdTouched, pwd)}>
-                    • Mínimo 6 caracteres
+                    • Mínimo 8 caracteres
                   </li>
                   <li className={hintColor(pwdHasUpper, pwdTouched, pwd)}>
                     • Al menos 1 mayúscula (A–Z)
@@ -1392,52 +1550,71 @@ export default function PacientesNuevo() {
               )}
 
               <div className="space-y-3">
-                {propias.map((row) => (
-                  <div
-                    key={row.id}
-                    className="rounded-lg border border-gray-200 p-3"
-                  >
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                      <AntecedenteSelect
-                        value={row.sel as any}
-                        options={antecedentesOpts}
-                        onAskAdd={() => openAddModal("propio", row.id)}
-                        onChangeSel={(val) => {
-                          if (val === OTHER) {
-                            openAddModal("propio", row.id);
-                            return;
-                          }
-                          setPropias((arr) =>
-                            arr.map((r) =>
-                              r.id === row.id ? { ...r, sel: val as any } : r
+                {propias.map((row) => {
+                  // IDs ya seleccionados en propias (excluyendo el actual)
+                  const yaSeleccionados = propias
+                    .filter((r) => r.id !== row.id)
+                    .map((r) => r.sel)
+                    .filter((sel) => sel !== "");
+
+                  return (
+                    <div
+                      key={row.id}
+                      className="rounded-lg border border-gray-200 p-3"
+                    >
+                      <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
+                        <AntecedenteSelect
+                          value={row.sel as any}
+                          options={antecedentesOpts}
+                          selectedIds={yaSeleccionados}
+                          onAskAdd={() => openAddModal("propio", row.id)}
+                          onChangeSel={(val) => {
+                            if (val === OTHER) {
+                              openAddModal("propio", row.id);
+                              return;
+                            }
+                            setPropias((arr) =>
+                              arr.map((r) =>
+                                r.id === row.id ? { ...r, sel: val as any } : r
+                              )
+                            );
+                            setErrorPropias(null);
+                          }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setPropias((arr) =>
+                              arr.filter((r) => r.id !== row.id)
                             )
-                          );
-                          setErrorPropias(null);
-                        }}
-                      />
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setPropias((arr) =>
-                            arr.filter((r) => r.id !== row.id)
-                          )
-                        }
-                        className="self-start rounded-md border px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                      >
-                        Quitar
-                      </button>
+                          }
+                          className="self-start rounded-md border px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 whitespace-nowrap"
+                        >
+                          Quitar
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
 
               <button
                 type="button"
-                disabled={loadingAnt}
+                disabled={
+                  loadingAnt ||
+                  propias.some((p) => !p.sel) ||
+                  propias.length >= MAX_PROP
+                }
                 onClick={() => {
                   if (propias.some((p) => !p.sel)) {
                     setErrorPropias(
                       "Debes completar la enfermedad anterior antes de añadir otra."
+                    );
+                    return;
+                  }
+                  if (propias.length >= MAX_PROP) {
+                    setErrorPropias(
+                      `Solo puedes añadir hasta ${MAX_PROP} enfermedades propias.`
                     );
                     return;
                   }
@@ -1449,6 +1626,16 @@ export default function PacientesNuevo() {
               >
                 Añadir enfermedad propia
               </button>
+              {propias.some((p) => !p.sel) && !errorPropias && (
+                <p className="mt-1 text-xs text-red-600">
+                  Primero selecciona la enfermedad anterior o quítala.
+                </p>
+              )}
+              {propias.length >= MAX_PROP && (
+                <p className="mt-1 text-sm text-amber-600">
+                  Has alcanzado el límite de {MAX_PROP} enfermedades propias.
+                </p>
+              )}
               {errorPropias && (
                 <p className="mt-1 text-sm text-red-600">{errorPropias}</p>
               )}
@@ -1466,61 +1653,80 @@ export default function PacientesNuevo() {
               )}
 
               <div className="space-y-3">
-                {familiares.map((row) => (
-                  <div
-                    key={row.id}
-                    className="rounded-lg border border-gray-200 p-3"
-                  >
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                      <AntecedenteSelect
-                        value={row.sel as any}
-                        options={antecedentesOpts}
-                        withRelacion
-                        relacion={row.relacion}
-                        onAskAdd={() => openAddModal("familiar", row.id)}
-                        onChangeRelacion={(rel) =>
-                          setFamiliares((arr) =>
-                            arr.map((r) =>
-                              r.id === row.id ? { ...r, relacion: rel } : r
+                {familiares.map((row) => {
+                  // IDs ya seleccionados en familiares (excluyendo el actual)
+                  const yaSeleccionados = familiares
+                    .filter((r) => r.id !== row.id)
+                    .map((r) => r.sel)
+                    .filter((sel) => sel !== "");
+
+                  return (
+                    <div
+                      key={row.id}
+                      className="rounded-lg border border-gray-200 p-3"
+                    >
+                      <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
+                        <AntecedenteSelect
+                          value={row.sel as any}
+                          options={antecedentesOpts}
+                          selectedIds={yaSeleccionados}
+                          withRelacion
+                          relacion={row.relacion}
+                          onAskAdd={() => openAddModal("familiar", row.id)}
+                          onChangeRelacion={(rel) =>
+                            setFamiliares((arr) =>
+                              arr.map((r) =>
+                                r.id === row.id ? { ...r, relacion: rel } : r
+                              )
                             )
-                          )
-                        }
-                        onChangeSel={(val) => {
-                          if (val === OTHER) {
-                            openAddModal("familiar", row.id);
-                            return;
                           }
-                          setFamiliares((arr) =>
-                            arr.map((r) =>
-                              r.id === row.id ? { ...r, sel: val as any } : r
+                          onChangeSel={(val) => {
+                            if (val === OTHER) {
+                              openAddModal("familiar", row.id);
+                              return;
+                            }
+                            setFamiliares((arr) =>
+                              arr.map((r) =>
+                                r.id === row.id ? { ...r, sel: val as any } : r
+                              )
+                            );
+                            setErrorFamiliares(null); // limpia error al seleccionar
+                          }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setFamiliares((arr) =>
+                              arr.filter((r) => r.id !== row.id)
                             )
-                          );
-                          setErrorFamiliares(null); // limpia error al seleccionar
-                        }}
-                      />
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setFamiliares((arr) =>
-                            arr.filter((r) => r.id !== row.id)
-                          )
-                        }
-                        className="self-start sm:ml-auto rounded-md border px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                      >
-                        Quitar
-                      </button>
+                          }
+                          className="self-start rounded-md border px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 whitespace-nowrap"
+                        >
+                          Quitar
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
 
               <button
                 type="button"
-                disabled={loadingAnt}
+                disabled={
+                  loadingAnt ||
+                  familiares.some((f) => !f.sel) ||
+                  familiares.length >= MAX_FAM
+                }
                 onClick={() => {
                   if (familiares.some((f) => !f.sel)) {
                     setErrorFamiliares(
                       "Debes completar el antecedente anterior antes de añadir otro."
+                    );
+                    return;
+                  }
+                  if (familiares.length >= MAX_FAM) {
+                    setErrorFamiliares(
+                      `Solo puedes añadir hasta ${MAX_FAM} antecedentes familiares.`
                     );
                     return;
                   }
@@ -1535,6 +1741,16 @@ export default function PacientesNuevo() {
               >
                 Añadir antecedente familiar
               </button>
+              {familiares.some((f) => !f.sel) && !errorFamiliares && (
+                <p className="mt-1 text-xs text-red-600">
+                  Primero selecciona el antecedente anterior o quítalo.
+                </p>
+              )}
+              {familiares.length >= MAX_FAM && (
+                <p className="mt-1 text-sm text-amber-600">
+                  Has alcanzado el límite de {MAX_FAM} antecedentes familiares.
+                </p>
+              )}
               {errorFamiliares && (
                 <p className="mt-1 text-sm text-red-600">{errorFamiliares}</p>
               )}
@@ -1574,9 +1790,9 @@ export default function PacientesNuevo() {
         {step === 3 && (
           <>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
+              <div className="sm:col-span-2">
                 <label className="block text-sm font-medium text-gray-700">
-                  Nombre contacto emergencia
+                  Nombre contacto emergencia *
                 </label>
                 <input
                   name="contacto_emergencia_nom"
@@ -1595,16 +1811,33 @@ export default function PacientesNuevo() {
 
               <div>
                 <label className="block text-sm font-medium text-gray-700">
-                  Celular emergencia
+                  Celular emergencia *
                 </label>
                 <input
                   name="contacto_emergencia_cel"
                   value={emergencia.contacto_emergencia_cel}
-                  onChange={handleNumeric(
-                    setEmergencia,
-                    "contacto_emergencia_cel",
-                    10
-                  )}
+                  onChange={(e) => {
+                    const val = e.target.value.replace(/\D/g, "").slice(0, 10);
+                    setEmergencia((prev) => ({
+                      ...prev,
+                      contacto_emergencia_cel: val,
+                    }));
+
+                    // Validación en vivo de formato
+                    if (val && !/^09\d{8}$/.test(val)) {
+                      setErrors((prev) => ({
+                        ...prev,
+                        contacto_emergencia_cel:
+                          "Debe iniciar con 09 y tener 10 dígitos.",
+                      }));
+                    } else {
+                      setErrors((prev) => ({
+                        ...prev,
+                        contacto_emergencia_cel: "",
+                      }));
+                    }
+                    setErrorTop("");
+                  }}
                   className={inputClass("contacto_emergencia_cel")}
                   placeholder="09xxxxxxxx"
                   inputMode="numeric"
@@ -1616,11 +1849,78 @@ export default function PacientesNuevo() {
                     {errors.contacto_emergencia_cel}
                   </p>
                 )}
+                {emergencia.contacto_emergencia_cel &&
+                  /^09\d{8}$/.test(emergencia.contacto_emergencia_cel) &&
+                  !errors.contacto_emergencia_cel && (
+                    <p className="mt-1 text-xs text-green-600">
+                      Formato válido
+                    </p>
+                  )}
               </div>
 
-              <div className="sm:col-span-2">
+              <div>
                 <label className="block text-sm font-medium text-gray-700">
-                  Parentesco
+                  Correo emergencia{isMinor && " *"}
+                  {!isMinor && (
+                    <span className="text-xs text-gray-500 ml-1">
+                      (opcional)
+                    </span>
+                  )}
+                </label>
+                <input
+                  type="email"
+                  name="contacto_emergencia_email"
+                  value={emergencia.contacto_emergencia_email}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setEmergencia((prev) => ({
+                      ...prev,
+                      contacto_emergencia_email: val,
+                    }));
+
+                    // Validación en vivo de formato
+                    if (val.trim()) {
+                      if (!isValidEmail(val)) {
+                        setErrors((prev) => ({
+                          ...prev,
+                          contacto_emergencia_email:
+                            "Formato de correo inválido.",
+                        }));
+                      } else {
+                        setErrors((prev) => ({
+                          ...prev,
+                          contacto_emergencia_email: "",
+                        }));
+                      }
+                    } else {
+                      setErrors((prev) => ({
+                        ...prev,
+                        contacto_emergencia_email: "",
+                      }));
+                    }
+                    setErrorTop("");
+                  }}
+                  className={inputClass("contacto_emergencia_email")}
+                  placeholder="correo@ejemplo.com"
+                  required={isMinor}
+                />
+                {errors.contacto_emergencia_email && (
+                  <p className="mt-1 text-sm text-red-600">
+                    {errors.contacto_emergencia_email}
+                  </p>
+                )}
+                {emergencia.contacto_emergencia_email &&
+                  isValidEmail(emergencia.contacto_emergencia_email) &&
+                  !errors.contacto_emergencia_email && (
+                    <p className="mt-1 text-xs text-green-600">
+                      Formato válido
+                    </p>
+                  )}
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700">
+                  Parentesco *
                 </label>
                 <select
                   name="parSelect"
@@ -1729,6 +2029,7 @@ export default function PacientesNuevo() {
                 <strong>Contacto de emergencia:</strong>{" "}
                 {emergencia.contacto_emergencia_nom || "—"} —{" "}
                 {emergencia.contacto_emergencia_cel || "—"} —{" "}
+                {emergencia.contacto_emergencia_email || "—"} —{" "}
                 {emergencia.parSelect || "—"}
               </div>
             </div>

@@ -4,6 +4,9 @@ import { Eye, EyeOff, Loader2, Pencil } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../../api/axios";
 import { useAuth } from "../../context/AuthContext";
+import { useFotoPerfil } from "../../hooks/useFotoPerfil";
+import { e164ToLocal, localToE164 } from "../../utils/phoneFormat";
+
 
 /* =========================
    Tipos / Catálogos
@@ -100,6 +103,7 @@ type Errors = Partial<
 export default function PerfilEdicion() {
   const navigate = useNavigate();
   const { usuario, setUsuario } = useAuth();
+  const { subirFoto, eliminarFoto } = useFotoPerfil();
 
   const [form, setForm] = useState<FormState>({
     primer_nombre: "",
@@ -124,6 +128,7 @@ export default function PerfilEdicion() {
   const [showPass2, setShowPass2] = useState(false);
 
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [fotoOriginal, setFotoOriginal] = useState<string | null>(null);
   const [errors, setErrors] = useState<Errors>({});
 
   const [checkingCedula, setCheckingCedula] = useState(false);
@@ -165,16 +170,20 @@ export default function PerfilEdicion() {
       sexo: usuario.sexo ?? "",
       fecha_nacimiento: usuario.fecha_nacimiento ?? "",
       tipo_sangre: usuario.tipo_sangre ?? "",
-      celular: usuario.celular ?? "",
+      celular: e164ToLocal(usuario.celular ?? ""),
       email:
         (usuario.usuario_email as string) ?? (usuario.email as string) ?? "",
       nueva_password: "",
       repetir_password: "",
       foto: null,
     }));
-    if (typeof usuario?.foto === "string" && usuario.foto)
+    if (typeof usuario?.foto === "string" && usuario.foto) {
       setPreviewUrl(usuario.foto);
-    else setPreviewUrl(null);
+      setFotoOriginal(usuario.foto);
+    } else {
+      setPreviewUrl(null);
+      setFotoOriginal(null);
+    }
   }, [usuario]);
 
   /* =========================
@@ -452,43 +461,37 @@ export default function PerfilEdicion() {
     try {
       setSaving(true);
 
-      const hasPhoto = !!form.foto;
-      if (hasPhoto) {
-        const fd = new FormData();
-        fd.append("primer_nombre", form.primer_nombre);
-        fd.append("segundo_nombre", form.segundo_nombre);
-        fd.append("primer_apellido", form.primer_apellido);
-        fd.append("segundo_apellido", form.segundo_apellido);
-        fd.append("cedula", form.cedula);
-        fd.append("sexo", form.sexo);
-        fd.append("fecha_nacimiento", form.fecha_nacimiento);
-        fd.append("tipo_sangre", form.tipo_sangre);
-        fd.append("celular", form.celular);
-        fd.append("email", form.email);
-        if (form.nueva_password) fd.append("password", form.nueva_password);
-        if (form.foto) fd.append("foto", form.foto);
-
-        await api.patch(`/usuarios/${usuario.id_usuario}/`, fd, {
-          headers: { "Content-Type": "multipart/form-data" },
-        });
-      } else {
-        const payload: any = {
-          primer_nombre: form.primer_nombre,
-          segundo_nombre: form.segundo_nombre,
-          primer_apellido: form.primer_apellido,
-          segundo_apellido: form.segundo_apellido,
-          cedula: form.cedula,
-          sexo: form.sexo,
-          fecha_nacimiento: form.fecha_nacimiento,
-          tipo_sangre: form.tipo_sangre,
-          celular: form.celular,
-          email: form.email,
-        };
-        if (form.nueva_password) payload.password = form.nueva_password;
-
-        await api.patch(`/usuarios/${usuario.id_usuario}/`, payload);
+      // 1) Si marcó eliminar foto
+      if (!fotoOriginal && !form.foto) {
+        await eliminarFoto(usuario.id_usuario);
       }
 
+      // 2) Si subió una foto nueva
+      if (form.foto instanceof File) {
+        await subirFoto(usuario.id_usuario, form.foto);
+      }
+
+      // 3) Actualizar datos del usuario SIEMPRE
+      const payload: any = {
+        primer_nombre: form.primer_nombre,
+        segundo_nombre: form.segundo_nombre,
+        primer_apellido: form.primer_apellido,
+        segundo_apellido: form.segundo_apellido,
+        cedula: form.cedula,
+        sexo: form.sexo,
+        fecha_nacimiento: form.fecha_nacimiento,
+        tipo_sangre: form.tipo_sangre,
+        celular: localToE164(form.celular),
+        email: form.email,
+      };
+
+      if (form.nueva_password) {
+        payload.password = form.nueva_password;
+      }
+
+      await api.patch(`/usuarios/${usuario.id_usuario}/`, payload);
+
+      // 4) Traer usuario actualizado
       const { data } = await api.get(`/usuarios/${usuario.id_usuario}/`);
       setUsuario(data);
       localStorage.setItem("usuario", JSON.stringify(data));
@@ -502,6 +505,7 @@ export default function PerfilEdicion() {
         err?.response?.data?.cedula?.[0] ||
         err?.response?.data?.celular?.[0] ||
         "No se pudo guardar los cambios.";
+
       setErrorTop(typeof detail === "string" ? detail : JSON.stringify(detail));
     } finally {
       setSaving(false);
@@ -561,14 +565,15 @@ export default function PerfilEdicion() {
           <h2 className="text-lg font-semibold mb-4">Datos personales</h2>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-start">
-            {/* Foto */}
+            {/* Foto (manejo completo con Cloudinary) */}
             <div className="md:col-span-1">
               <div className="flex flex-col items-center gap-4">
+                {/* Vista previa circular */}
                 <div className="w-40 h-40 rounded-full bg-gray-200 overflow-hidden ring-2 ring-gray-200">
                   {previewUrl ? (
                     <img
                       src={previewUrl}
-                      alt="Preview"
+                      alt="Foto de perfil"
                       className="w-full h-full object-cover"
                     />
                   ) : (
@@ -579,29 +584,61 @@ export default function PerfilEdicion() {
                 </div>
 
                 <div className="w-full">
+                  {/* Input de archivo */}
                   <input
                     type="file"
                     name="foto"
                     accept="image/*"
-                    onChange={onChange}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0] ?? null;
+                      setForm((f) => ({ ...f, foto: file }));
+
+                      setPreviewUrl(
+                        file ? URL.createObjectURL(file) : fotoOriginal ?? null
+                      );
+                    }}
                     className="block w-full text-sm rounded-lg border px-3 py-2 file:mr-4 file:rounded-md file:border-0 file:px-3 file:py-1.5 file:bg-gray-800 file:text-white hover:file:bg-black/80"
                   />
-                  <div className="mt-2 flex flex-wrap justify-center gap-2">
+
+                  <div className="mt-3 flex flex-col items-center gap-2">
+                    {/* Botón: Quitar selección (si eligió una foto nueva) */}
                     {form.foto && (
                       <button
                         type="button"
                         onClick={() => {
                           setForm((f) => ({ ...f, foto: null }));
-                          setPreviewUrl(currentValues.foto ?? null);
+                          setPreviewUrl(fotoOriginal ?? null);
                         }}
                         className="rounded-lg border px-3 py-1.5 text-sm hover:bg-gray-50"
                       >
                         Quitar selección
                       </button>
                     )}
+
+                    {/* Botón: Quitar foto actual (Cloudinary) */}
+                    {fotoOriginal && !form.foto && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFotoOriginal(null); // marcar eliminar
+                          setPreviewUrl(null); // reflejar en UI
+                        }}
+                        className="rounded-lg border px-3 py-1.5 text-sm hover:bg-gray-50"
+                      >
+                        Quitar foto actual
+                      </button>
+                    )}
+
+                    {/* Indicador cuando está marcada para eliminar */}
+                    {!fotoOriginal && !form.foto && previewUrl === null && (
+                      <span className="text-xs text-red-600">
+                        Foto marcada para eliminar
+                      </span>
+                    )}
                   </div>
+
                   <p className="text-xs text-gray-500 text-center mt-2">
-                    JPG/PNG. Opcional.
+                    JPG/PNG. Máx. 5MB.
                   </p>
                 </div>
               </div>

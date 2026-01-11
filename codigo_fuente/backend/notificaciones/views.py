@@ -15,18 +15,15 @@ from citas.models import (
     ESTADO_CANCELADA,
 )
 from usuarios.models import Usuario
+from usuarios.utils import normalizar_celular_ecuador
 from .services import send_whatsapp_text
-
 
 # -------------------------
 # Helpers
 # -------------------------
 
 def _norm(s: str | None) -> str:
-    """
-    Normaliza: minúsculas, sin tildes, sin puntuación, sin dobles espacios.
-    Ej: 'Sí, confirmar' -> 'si confirmar'
-    """
+    # Normaliza: minúsculas, sin tildes, sin puntuación, sin dobles espacios.
     if not s:
         return ""
     s = s.strip().lower()
@@ -35,11 +32,7 @@ def _norm(s: str | None) -> str:
     s = s.translate(table)
     return " ".join(s.split())
 
-
 def _fmt_fecha_hora(fecha, hora) -> str:
-    """
-    Devuelve 'Miércoles 24/09/2025 a las 17:00' en español sin depender de locale.
-    """
     dias_semana = {
         0: "Lunes", 1: "Martes", 2: "Miércoles",
         3: "Jueves", 4: "Viernes", 5: "Sábado", 6: "Domingo",
@@ -50,7 +43,6 @@ def _fmt_fecha_hora(fecha, hora) -> str:
     )
     dia_semana = dias_semana[fh.weekday()]
     return f"{dia_semana} {fh.strftime('%d/%m/%Y a las %H:%M')}"
-
 
 def _nombre_completo_usuario(u) -> str:
     if not u:
@@ -66,7 +58,6 @@ def _nombre_completo_usuario(u) -> str:
         if v:
             piezas.append(str(v).strip())
     return " ".join(piezas).strip()
-
 
 def _prefijo_doctor_y_articulo(cita: Cita) -> tuple[str, str]:
     """
@@ -87,11 +78,7 @@ def _prefijo_doctor_y_articulo(cita: Cita) -> tuple[str, str]:
             return "el", "Dr."
     return "", ""
 
-
 def _doctor_line(cita: Cita) -> str:
-    """
-    'con el Dr. Luis Tibán' / 'con la Dra. Ana Pérez' / 'con Luis Tibán' / fallback al __str__.
-    """
     odo = getattr(cita, "id_odontologo", None)
     nombre = ""
     if odo is not None:
@@ -110,15 +97,11 @@ def _doctor_line(cita: Cita) -> str:
         return f"con {art} {pref} {nombre}".strip()
     return f"con {nombre}".strip() if nombre else "con su odontólogo"
 
-
-# --- WRAPPERS públicos para usar desde shell/otros módulos ---
-
 _DIAS = {0:"Lunes",1:"Martes",2:"Miércoles",3:"Jueves",4:"Viernes",5:"Sábado",6:"Domingo"}
 _MESES = {1:"enero",2:"febrero",3:"marzo",4:"abril",5:"mayo",6:"junio",7:"julio",8:"agosto",
-          9:"septiembre",10:"octubre",11:"noviembre",12:"diciembre"}
+            9:"septiembre",10:"octubre",11:"noviembre",12:"diciembre"}
 
 def fmt_fecha_larga(fecha, hora) -> str:
-    """Miércoles 24 de septiembre de 2025 (24/09/2025) a las 17:00"""
     fh = timezone.make_aware(
         timezone.datetime.combine(fecha, hora),
         timezone.get_current_timezone()
@@ -128,22 +111,25 @@ def fmt_fecha_larga(fecha, hora) -> str:
     return f"{dia} {fh.day} de {mes} de {fh.year} ({fh.strftime('%d/%m/%Y')}) a las {fh.strftime('%H:%M')}"
 
 def doctor_line(cita: Cita) -> str:
-    """Wrapper público de _doctor_line para import externo."""
     return _doctor_line(cita)
 
-
 def _mensaje_confirmada(cita: Cita) -> str:
-    paciente = str(getattr(cita, "id_paciente", "") or "Paciente")
+    # Obtener nombre del paciente (sin el "Paciente X -")
+    paciente_obj = getattr(cita, "id_paciente", None)
+    if paciente_obj and hasattr(paciente_obj, "id_usuario"):
+        usuario = paciente_obj.id_usuario
+        nombre_paciente = f"{usuario.primer_nombre} {usuario.primer_apellido}"
+    else:
+        nombre_paciente = "Paciente"
+    
     doctor = _doctor_line(cita)
-    lugar = str(getattr(cita, "id_consultorio", "") or "el consultorio")
     fh = _fmt_fecha_hora(cita.fecha, cita.hora)
     return (
         "✅ *Cita confirmada*\n"
-        f"Gracias {paciente}. Te esperamos el {fh} {doctor} en {lugar}.\n"
-        "Si deseas reprogramar o cancelar, puedes hacerlo desde la web o respondiendo a este número.\n"
+        f"Gracias {nombre_paciente}. Te esperamos el {fh} {doctor}.\n"
+        "Si deseas reprogramar o cancelar, llama al consultorio\n"
         "— Bella Dent 🦷"
     )
-
 
 def _mensaje_cancelada(cita: Cita) -> str:
     fh = _fmt_fecha_hora(cita.fecha, cita.hora)
@@ -154,7 +140,6 @@ def _mensaje_cancelada(cita: Cita) -> str:
         "— Bella Dent 🦷"
     )
 
-
 def _mensaje_ya_confirmada(cita: Cita) -> str:
     fh = _fmt_fecha_hora(cita.fecha, cita.hora)
     return (
@@ -162,7 +147,6 @@ def _mensaje_ya_confirmada(cita: Cita) -> str:
         "Si necesitas cambiarla, por favor comunícate con el consultorio o responde este mensaje.\n"
         "— Bella Dent 🦷"
     )
-
 
 def _mensaje_ya_cancelada(cita: Cita) -> str:
     fh = _fmt_fecha_hora(cita.fecha, cita.hora)
@@ -182,19 +166,16 @@ def _mensaje_ya_cancelada(cita: Cita) -> str:
 @permission_classes([AllowAny])
 def whatsapp_incoming(request):
     data = request.POST.dict()
-    print("[WA INCOMING]", data)
 
-    # Origen y texto (incluye Quick Reply)
     from_wa     = (data.get("From") or "")
     body        = _norm(data.get("Body"))
     btn_text    = _norm(data.get("ButtonText"))
     btn_payload = _norm(data.get("ButtonPayload") or data.get("Postback") or data.get("Payload"))
+    
+    original_msg_sid = data.get("OriginalRepliedMessageSid") or data.get("ReferralMessageSid")
 
-    # Priorizar payload > texto del botón > texto libre
     text = btn_payload or btn_text or body
-    # print("NORMALIZADO:", text)
 
-    # Decisión tolerante
     decision = None
     if text in {"confirm", "si", "si confirmo", "si confirmar", "confirmo", "confirmar"}:
         decision = ESTADO_CONFIRMADA
@@ -206,60 +187,98 @@ def whatsapp_incoming(request):
             e164,
             "🔄 Para reprogramar, por favor ingresa a la web 🌐 o comunícate con el consultorio 📞\n— Bella Dent 🦷"
         )
-        return Response({"ok": True, "info": "reprogramar"}, status=200)
-    else:
-        if text.startswith("si") or text.startswith("confirm"):
-            decision = ESTADO_CONFIRMADA
-        elif text.startswith("no") or "cancel" in text:
-            decision = ESTADO_CANCELADA
+        return Response({"ok": True}, status=200)
 
     if not decision:
-        return Response({"ok": True, "message": "Responde SI para confirmar o NO para cancelar"}, status=200)
+        return Response({"ok": True}, status=200)
 
-    # Ubicar usuario por número (E.164)
+    # Normalizar número
     e164 = from_wa.replace("whatsapp:", "")
-    try:
-        usuario = Usuario.objects.get(celular__endswith=e164[-9:])  # tolera prefijo país
-    except Usuario.DoesNotExist:
-        return Response({"ok": False, "detail": "Número no asociado a un usuario"}, status=200)
+    e164_normalizado = normalizar_celular_ecuador(e164)
+    if not e164_normalizado:
+        return Response({"ok": True}, status=200)
 
-    # Cita más próxima desde hoy (en estados relevantes)
+    # Obtener citas asociadas
+    from pacientes.models import Paciente
     now = timezone.now()
-    cita = (
-        Cita.objects
-        .filter(
-            id_paciente__id_usuario=usuario.id_usuario,
-            estado__in=[ESTADO_PENDIENTE, ESTADO_CONFIRMADA, ESTADO_CANCELADA],
-            fecha__gte=now.date(),
-        )
-        .order_by("fecha", "hora")
-        .first()
-    )
-    if not cita:
-        return Response({"ok": True, "detail": "No hay cita pendiente para actualizar"}, status=200)
+    candidatos_citas = []
 
-    # Idempotencia
+    # Por celular propio
+    for u in Usuario.objects.exclude(celular__isnull=True).exclude(celular=''):
+        if normalizar_celular_ecuador(u.celular) == e164_normalizado:
+            citas_usuario = Cita.objects.filter(
+                id_paciente__id_usuario=u.id_usuario,
+                estado__in=[ESTADO_PENDIENTE, ESTADO_CONFIRMADA, ESTADO_CANCELADA],
+                fecha__gte=now.date(),
+            ).order_by("fecha", "hora")
+            for cita in citas_usuario:
+                candidatos_citas.append({'cita': cita, 'usuario': u})
+
+    # Por contacto de emergencia
+    for p in Paciente.objects.exclude(contacto_emergencia_cel__isnull=True).exclude(contacto_emergencia_cel=''):
+        if normalizar_celular_ecuador(p.contacto_emergencia_cel) == e164_normalizado:
+            citas_paciente = Cita.objects.filter(
+                id_paciente=p,
+                estado__in=[ESTADO_PENDIENTE, ESTADO_CONFIRMADA, ESTADO_CANCELADA],
+                fecha__gte=now.date(),
+            ).order_by("fecha", "hora")
+            for cita in citas_paciente:
+                candidatos_citas.append({'cita': cita, 'usuario': p.id_usuario})
+
+    if not candidatos_citas:
+        return Response({"ok": True}, status=200)
+
+    cita_seleccionada = None
+
+    # 1: Match exacto por SID
+    if original_msg_sid:
+        for c in candidatos_citas:
+            if c['cita'].whatsapp_message_sid == original_msg_sid:
+                cita_seleccionada = c
+                break
+
+    # 2: Último recordatorio en 48h
+    if not cita_seleccionada:
+        from datetime import timedelta
+        hace_48h = now - timedelta(hours=48)
+        recientes = [
+            c for c in candidatos_citas 
+            if c['cita'].recordatorio_enviado_at 
+            and c['cita'].recordatorio_enviado_at >= hace_48h
+        ]
+        if recientes:
+            recientes.sort(key=lambda x: x['cita'].recordatorio_enviado_at, reverse=True)
+            cita_seleccionada = recientes[0]
+
+    # 3: La más próxima
+    if not cita_seleccionada:
+        candidatos_citas.sort(key=lambda x: (x['cita'].fecha, x['cita'].hora))
+        cita_seleccionada = candidatos_citas[0]
+
+    cita = cita_seleccionada["cita"]
+    usuario = cita_seleccionada["usuario"]
+
     if decision == ESTADO_CONFIRMADA and cita.estado == ESTADO_CONFIRMADA:
-        send_whatsapp_text(e164, _mensaje_ya_confirmada(cita))
-        return Response({"ok": True, "cita_id": cita.id_cita, "nuevo_estado": cita.estado}, status=200)
-    if decision == ESTADO_CANCELADA and cita.estado == ESTADO_CANCELADA:
-        send_whatsapp_text(e164, _mensaje_ya_cancelada(cita))
-        return Response({"ok": True, "cita_id": cita.id_cita, "nuevo_estado": cita.estado}, status=200)
+        send_whatsapp_text(e164_normalizado, _mensaje_ya_confirmada(cita))
+        return Response({"ok": True}, status=200)
 
-    # Transición + seguimiento
+    if decision == ESTADO_CANCELADA and cita.estado == ESTADO_CANCELADA:
+        send_whatsapp_text(e164_normalizado, _mensaje_ya_cancelada(cita))
+        return Response({"ok": True}, status=200)
+
     if decision == ESTADO_CONFIRMADA:
         cita.estado = ESTADO_CONFIRMADA
         cita.cancelada_en = None
         cita.cancelada_por_rol = None
         cita.confirmacion_fuente = "whatsapp"
         cita.save(update_fields=["estado", "confirmacion_fuente", "cancelada_en", "cancelada_por_rol"])
-        send_whatsapp_text(e164, _mensaje_confirmada(cita))
+        send_whatsapp_text(e164_normalizado, _mensaje_confirmada(cita))
     else:
         cita.estado = ESTADO_CANCELADA
         cita.cancelada_en = now
-        cita.cancelada_por_rol = 2  # 2 = paciente
+        cita.cancelada_por_rol = 2
         cita.confirmacion_fuente = "whatsapp"
         cita.save(update_fields=["estado", "cancelada_en", "cancelada_por_rol", "confirmacion_fuente"])
-        send_whatsapp_text(e164, _mensaje_cancelada(cita))
+        send_whatsapp_text(e164_normalizado, _mensaje_cancelada(cita))
 
-    return Response({"ok": True, "cita_id": cita.id_cita, "nuevo_estado": cita.estado}, status=200)
+    return Response({"ok": True}, status=200)

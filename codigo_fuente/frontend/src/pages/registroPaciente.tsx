@@ -4,8 +4,9 @@ import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api/axios";
 import { publicApi } from "../api/publicApi";
 import { Eye, EyeOff, User } from "lucide-react";
-import logoUrl from "../assets/oralflow-logo.png";
+import logoUrl from "../assets/belladent-logo5.png";
 import heroImg from "../assets/diente-login.png";
+import { useFotoPerfil } from "../hooks/useFotoPerfil";
 
 const PRIMARY = "#0070B7";
 
@@ -53,26 +54,65 @@ function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email);
 }
 
-function atLeastSixMonthsOld(isoDate: string): boolean {
-  if (!isoDate) return false;
+function isValidBirthDate(isoDate: string): {
+  valid: boolean;
+  message?: string;
+} {
+  if (!isoDate)
+    return { valid: false, message: "La fecha de nacimiento es obligatoria." };
+
   const birth = new Date(isoDate + "T00:00:00");
-  if (Number.isNaN(birth.getTime())) return false;
+  if (Number.isNaN(birth.getTime()))
+    return { valid: false, message: "Fecha inválida." };
+
   const now = new Date();
-  const sixMonthsAgo = new Date(
-    now.getFullYear(),
-    now.getMonth() - 6,
-    now.getDate()
-  );
-  return birth <= sixMonthsAgo;
+  const birthYear = birth.getFullYear();
+
+  // Validar que la fecha no sea anterior a 1930
+  if (birthYear < 1930) {
+    return {
+      valid: false,
+      message: "La fecha de nacimiento no puede ser anterior a 1930.",
+    };
+  }
+
+  // Validar que no sea una fecha futura
+  if (birth > now) {
+    return {
+      valid: false,
+      message: "La fecha de nacimiento no puede ser futura.",
+    };
+  }
+
+  // Calcular edad
+  let age = now.getFullYear() - birthYear;
+  const monthDiff = now.getMonth() - birth.getMonth();
+  const dayDiff = now.getDate() - birth.getDate();
+
+  // Ajustar si aún no ha cumplido años este año
+  if (monthDiff < 0 || (monthDiff === 0 && dayDiff < 0)) {
+    age--;
+  }
+
+  // Validar que sea mayor de 18 años
+  if (age < 18) {
+    return {
+      valid: false,
+      message:
+        "Debes ser mayor de 18 años para registrarte. Los menores deben registrarse presencialmente en el consultorio.",
+    };
+  }
+
+  return { valid: true };
 }
 
 function fullNameTwoWords(name: string): boolean {
   return /^\s*\S+\s+\S+(\s+\S+)*\s*$/.test(name);
 }
 
-// Contraseña fuerte: 6+ caracteres, al menos 1 mayúscula y 1 dígito
+// Contraseña fuerte: 8+ caracteres, al menos 1 mayúscula y 1 dígito
 function isStrongPassword(pwd: string) {
-  return /^(?=.*[A-Z])(?=.*\d).{6,}$/.test(pwd);
+  return /^(?=.*[A-Z])(?=.*\d).{8,}$/.test(pwd);
 }
 
 // Debounce simple
@@ -93,6 +133,7 @@ export default function RegistroPaciente() {
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
   const [loading, setLoading] = useState(false);
   const [errorTop, setErrorTop] = useState("");
+  const { subirFoto } = useFotoPerfil();
 
   const [antecedentes, setAntecedentes] = useState<AntecedenteOpt[]>([]);
   const [loadingAnt, setLoadingAnt] = useState<boolean>(true);
@@ -199,9 +240,10 @@ export default function RegistroPaciente() {
   // === Validación en vivo de contraseña ===
   const [pwdTouched, setPwdTouched] = useState(false);
   const [pwd2Touched, setPwd2Touched] = useState(false);
+  const [fechaTouched, setFechaTouched] = useState(false);
   const pwd = personal.password ?? "";
   const pwd2 = personal.password2 ?? "";
-  const pwdHasMin = pwd.length >= 6;
+  const pwdHasMin = pwd.length >= 8;
   const pwdHasUpper = /[A-Z]/.test(pwd);
   const pwdHasDigit = /\d/.test(pwd);
   const pwdStrong = pwdHasMin && pwdHasUpper && pwdHasDigit;
@@ -238,8 +280,26 @@ export default function RegistroPaciente() {
 
   const handleSelectFoto: React.ChangeEventHandler<HTMLInputElement> = (e) => {
     const f = e.target.files?.[0];
-    if (f) setFoto(f);
+    if (f) {
+      const allowedTypes = ["image/jpeg", "image/jpg", "image/png"];
+      const allowedExts = ["jpg", "jpeg", "png"];
+      const extension = f.name.split(".").pop()?.toLowerCase() || "";
+
+      // Validar tipo y extensión
+      if (!allowedTypes.includes(f.type) || !allowedExts.includes(extension)) {
+        alert("Solo se permiten imágenes en formato JPG, JPEG o PNG.");
+        if (fotoInputRef.current) fotoInputRef.current.value = "";
+        return;
+      }
+
+      // Renombrar para evitar nombres largos o con caracteres raros
+      const safeName = `foto_${Date.now()}.${extension}`;
+      const renamedFile = new File([f], safeName, { type: f.type });
+
+      setFoto(renamedFile);
+    }
   };
+
   const handleClearFoto = () => {
     setFoto(null);
     if (fotoInputRef.current) fotoInputRef.current.value = "";
@@ -313,7 +373,7 @@ export default function RegistroPaciente() {
         setCedulaExists(exists);
         setErrors((prev) => ({
           ...prev,
-          cedula: exists ? "Cédula ya registrada." : "",
+          cedula: exists ? "Cédula no válida o ya registrada" : "",
         }));
       }
 
@@ -322,7 +382,7 @@ export default function RegistroPaciente() {
         setEmailExists(exists);
         setErrors((prev) => ({
           ...prev,
-          email: exists ? "Correo ya registrado." : "",
+          email: exists ? "Correo no válido o ya registrado" : "",
         }));
       }
 
@@ -331,7 +391,7 @@ export default function RegistroPaciente() {
         setCelularExists(exists);
         setErrors((prev) => ({
           ...prev,
-          celular: exists ? "Celular ya registrado." : "",
+          celular: exists ? "Celular no válido o ya registrado" : "",
         }));
       }
     } catch (e) {
@@ -391,9 +451,10 @@ export default function RegistroPaciente() {
     /^\d{10}$/.test(personal.cedula) && isValidCedulaEC(personal.cedula);
   const celularOk = /^09\d{8}$/.test(personal.celular);
   const emailOk = isValidEmail(personal.email);
-  const fechaOk =
-    !!personal.fecha_nacimiento &&
-    atLeastSixMonthsOld(personal.fecha_nacimiento);
+  const fechaValidation = isValidBirthDate(personal.fecha_nacimiento);
+  const fechaOk = fechaValidation.valid;
+  const fechaHasValue = !!personal.fecha_nacimiento;
+  const fechaErrorMsg = fechaValidation.message || "";
 
   const canNextStep1 = Boolean(
     pwdStrong &&
@@ -479,13 +540,14 @@ export default function RegistroPaciente() {
     if (emailExists === true) newErrors.email = "Correo ya registrado.";
     if (celularExists === true) newErrors.celular = "Celular ya registrado.";
 
-    if (!personal.fecha_nacimiento)
-      newErrors.fecha_nacimiento = "La fecha de nacimiento es obligatoria.";
-    else if (!atLeastSixMonthsOld(personal.fecha_nacimiento))
-      newErrors.fecha_nacimiento = "Debe tener al menos 6 meses de edad.";
+    const fechaCheck = isValidBirthDate(personal.fecha_nacimiento);
+    if (!fechaCheck.valid) {
+      newErrors.fecha_nacimiento =
+        fechaCheck.message || "Fecha de nacimiento inválida.";
+    }
 
     if (!isStrongPassword(personal.password))
-      newErrors.password = "Mín. 6 car., al menos 1 mayúscula y 1 número.";
+      newErrors.password = "Mín. 8 car., al menos 1 mayúscula y 1 número.";
     if (personal.password2 !== personal.password)
       newErrors.password2 = "Las contraseñas no coinciden.";
 
@@ -585,16 +647,13 @@ export default function RegistroPaciente() {
       }).forEach(([k, v]) => fd.append(k, String(v)));
       fd.delete("password2");
       fd.append("activo", "true");
-      if (foto) fd.append("foto", foto);
 
-      const userRes = await publicApi.post(`/usuarios/`, fd, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      const userRes = await publicApi.post(`/usuarios/`, fd);
       const id_usuario = userRes.data.id_usuario;
 
       // 2) Login inmediato (público) para crear entidades protegidas
       const tokenRes = await publicApi.post(`/token/`, {
-        email: personal.email,
+        cedula: personal.cedula,
         password: personal.password,
       });
       const access = tokenRes.data.access as string;
@@ -604,6 +663,11 @@ export default function RegistroPaciente() {
       sessionStorage.setItem("accessToken", access);
       sessionStorage.setItem("refreshToken", refresh);
       localStorage.setItem("tokenStore", "session");
+
+      // === SUBIR FOTO (si eligió una) - DESPUÉS del login ===
+      if (foto) {
+        await subirFoto(id_usuario, foto);
+      }
 
       // 3) Crear Paciente (protegido) con `api`
       const pacRes = await api.post(`/pacientes/`, {
@@ -659,6 +723,18 @@ export default function RegistroPaciente() {
     }
   };
 
+  // Obtener IDs ya seleccionados para evitar duplicados
+  const getSelectedIds = (): Set<number> => {
+    const ids = new Set<number>();
+    propias.forEach((p) => {
+      if (p.sel && typeof p.sel === "number") ids.add(p.sel);
+    });
+    familiares.forEach((f) => {
+      if (f.sel && typeof f.sel === "number") ids.add(f.sel);
+    });
+    return ids;
+  };
+
   // Subcomponentes UI
   const AntecedenteSelect = ({
     value,
@@ -672,11 +748,14 @@ export default function RegistroPaciente() {
     withRelacion?: boolean;
     relacion?: Exclude<FamiliarRel, "propio">;
     onChangeRelacion?: (rel: Exclude<FamiliarRel, "propio">) => void;
+    currentId?: string; // ID de la fila actual para excluirla de la comparación
   }) => {
+    const selectedIds = getSelectedIds();
+
     return (
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+      <div className="flex flex-col sm:flex-row gap-2 w-full">
         <select
-          className="w-full rounded-lg border border-gray-300 px-3 py-2"
+          className="flex-1 rounded-lg border border-gray-300 px-3 py-2 min-w-0"
           value={value === "" ? "" : String(value)}
           onChange={(e) =>
             onChangeSel(e.target.value === "" ? "" : Number(e.target.value))
@@ -693,16 +772,28 @@ export default function RegistroPaciente() {
 
           {!loadingAnt &&
             !errorAnt &&
-            antecedentes.map((opt) => (
-              <option key={opt.id} value={String(opt.id)}>
-                {opt.nombre}
-              </option>
-            ))}
+            antecedentes.map((opt) => {
+              // Deshabilitar si ya está seleccionado en otra fila
+              const isSelected = selectedIds.has(opt.id) && value !== opt.id;
+              return (
+                <option
+                  key={opt.id}
+                  value={String(opt.id)}
+                  disabled={isSelected}
+                  style={
+                    isSelected ? { color: "#999", fontStyle: "italic" } : {}
+                  }
+                >
+                  {opt.nombre}
+                  {isSelected ? " (Ya seleccionado)" : ""}
+                </option>
+              );
+            })}
         </select>
 
         {withRelacion && (
           <select
-            className="w-full rounded-lg border border-gray-300 px-3 py-2"
+            className="w-full sm:w-40 rounded-lg border border-gray-300 px-3 py-2"
             value={relacion}
             onChange={(e) =>
               onChangeRelacion?.(
@@ -725,938 +816,985 @@ export default function RegistroPaciente() {
     antecedentes.find((a) => a.id === id)?.nombre ?? `#${id}`;
 
   return (
-    <div className="min-h-screen w-full grid grid-cols-1 lg:grid-cols-2">
-      {/* Toast de éxito */}
-      {showSuccess && (
-        <div className="fixed top-4 right-4 z-50 animate-in fade-in zoom-in duration-200">
-          <div className="rounded-xl bg-green-600 text-white shadow-lg px-4 py-3">
-            <div className="font-semibold">¡Paciente registrado!</div>
-            <div className="text-sm text-white/90">
-              Redirigiendo al inicio de sesión…
-            </div>
-          </div>
-        </div>
-      )}
+    <>
+      {/* LOGO FIJO GLOBAL */}
+      <div
+        className="absolute left-0 top-0 w-full flex justify-center lg:left-8 lg:top-4 lg:w-auto lg:justify-start z-50"
+        style={{ paddingTop: "0.75rem" }}
+      >
+        <img
+          src={logoUrl}
+          alt="BellaDent"
+          className="h-20 w-auto max-w-[70vw] sm:h-24 sm:max-w-xs lg:h-28 lg:max-w-md"
+          style={{ marginTop: 0, paddingBottom: "1rem" }}
+        />
+      </div>
 
-      {/* Columna izquierda */}
-      <div className="relative px-8 py-10 flex items-start justify-center">
-        <div className="fixed lg:absolute left-4 top-4 lg:left-8 lg:top-6 z-20">
-          <img src={logoUrl} alt="OralFlow" className="h-16 w-auto" />
-        </div>
-
-        <div className="w-full max-w-xl mt-24">
-          {/* Stepper */}
-          <div className="mb-6 flex items-center justify-center gap-6">
-            {[
-              { n: 1, t: "Datos personales" },
-              { n: 2, t: "Datos clínicos" },
-              { n: 3, t: "Contacto de emergencia" },
-              { n: 4, t: "Revisión" },
-            ].map((s) => (
-              <div key={s.n} className="flex items-center gap-2">
-                <div
-                  className={`h-8 w-8 rounded-full grid place-items-center text-sm font-semibold ${
-                    step >= (s.n as 1 | 2 | 3 | 4)
-                      ? "text-white"
-                      : "bg-gray-200 text-gray-600"
-                  }`}
-                  style={
-                    step >= (s.n as 1 | 2 | 3 | 4)
-                      ? { backgroundColor: PRIMARY }
-                      : {}
-                  }
-                >
-                  {s.n}
-                </div>
-                <span className="hidden sm:block text-sm text-gray-700">
-                  {s.t}
-                </span>
+      <div className="min-h-screen w-full grid grid-cols-1 lg:grid-cols-2">
+        {/* Toast de éxito */}
+        {showSuccess && (
+          <div className="fixed top-4 right-4 z-50 animate-in fade-in zoom-in duration-200">
+            <div className="rounded-xl bg-green-600 text-white shadow-lg px-4 py-3">
+              <div className="font-semibold">¡Paciente registrado!</div>
+              <div className="text-sm text-white/90">
+                Redirigiendo al inicio de sesión…
               </div>
-            ))}
-          </div>
-
-          <h1 className="text-3xl font-semibold text-center text-gray-900 mb-4">
-            Registrarse
-          </h1>
-
-          {errorTop && (
-            <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-              {errorTop}
             </div>
-          )}
+          </div>
+        )}
 
-          <form onSubmit={handleSubmit} className="space-y-6">
-            {/* PASO 1: Foto + Datos personales */}
-            {step === 1 && (
-              <>
-                {/* Foto (opcional) */}
-                <div className="rounded-lg border p-4 bg-gray-50">
-                  <label className="block text-sm font-medium text-gray-700 mb-3">
-                    Foto (opcional)
-                  </label>
-
-                  <div className="flex items-center gap-4 flex-wrap">
-                    {/* Avatar / preview */}
-                    <div className="w-28 h-28 rounded-full overflow-hidden border bg-white grid place-items-center">
-                      {fotoPreview ? (
-                        <img
-                          src={fotoPreview}
-                          alt="Vista previa"
-                          className="w-full h-full object-cover"
-                        />
-                      ) : (
-                        <User className="w-10 h-10 text-gray-400" />
-                      )}
-                    </div>
-
-                    {/* Controles */}
-                    <div className="flex items-center gap-2">
-                      <input
-                        id="fotoPacientePublic"
-                        ref={fotoInputRef}
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        onChange={handleSelectFoto}
-                      />
-                      <label
-                        htmlFor="fotoPacientePublic"
-                        className="cursor-pointer rounded-lg bg-gray-800 text-white px-4 py-2 shadow hover:bg-black/80"
-                      >
-                        Seleccionar archivo
-                      </label>
-
-                      {foto && (
-                        <button
-                          type="button"
-                          onClick={handleClearFoto}
-                          className="rounded-lg border bg-white px-4 py-2 hover:bg-gray-50"
-                          title="Quitar la foto seleccionada"
-                        >
-                          Quitar selección
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  <p className="text-xs text-gray-500 mt-2">
-                    Formatos: JPG/PNG. Recomendado: imagen cuadrada para mejor
-                    encuadre.
-                  </p>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">
-                      Primer nombre
-                    </label>
-                    <input
-                      name="primer_nombre"
-                      value={personal.primer_nombre}
-                      onChange={(e) => onChange(setPersonal, e)}
-                      className={inputClass("primer_nombre")}
-                      required
-                    />
-                    {errors.primer_nombre && (
-                      <p className="mt-1 text-sm text-red-600">
-                        {errors.primer_nombre}
-                      </p>
-                    )}
-                  </div>
-                  {/* Segundo nombre OPCIONAL */}
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">
-                      Segundo nombre (Opcional)
-                    </label>
-                    <input
-                      name="segundo_nombre"
-                      value={personal.segundo_nombre}
-                      onChange={(e) => onChange(setPersonal, e)}
-                      className="w-full rounded-lg border border-gray-300 px-4 py-2"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">
-                      Primer apellido
-                    </label>
-                    <input
-                      name="primer_apellido"
-                      value={personal.primer_apellido}
-                      onChange={(e) => onChange(setPersonal, e)}
-                      className={inputClass("primer_apellido")}
-                      required
-                    />
-                    {errors.primer_apellido && (
-                      <p className="mt-1 text-sm text-red-600">
-                        {errors.primer_apellido}
-                      </p>
-                    )}
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">
-                      Segundo apellido
-                    </label>
-                    <input
-                      name="segundo_apellido"
-                      value={personal.segundo_apellido}
-                      onChange={(e) => onChange(setPersonal, e)}
-                      className={inputClass("segundo_apellido")}
-                      required
-                    />
-                    {errors.segundo_apellido && (
-                      <p className="mt-1 text-sm text-red-600">
-                        {errors.segundo_apellido}
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">
-                      Cédula
-                    </label>
-                    <input
-                      name="cedula"
-                      value={personal.cedula}
-                      onChange={handleNumeric(setPersonal, "cedula", 10)}
-                      onBlur={handleCedulaBlur}
-                      className={inputClass("cedula")}
-                      placeholder="10 dígitos"
-                      inputMode="numeric"
-                      maxLength={10}
-                      pattern="\\d{10}"
-                      required
-                    />
-                    {errors.cedula && (
-                      <p className="mt-1 text-sm text-red-600">
-                        {errors.cedula}
-                      </p>
-                    )}
-                    {checkingCedula && !errors.cedula && (
-                      <p className="mt-1 text-xs text-gray-500">
-                        Verificando cédula…
-                      </p>
-                    )}
-                    {cedulaExists === false && !errors.cedula && (
-                      <p className="mt-1 text-xs text-green-600">
-                        Cédula validada
-                      </p>
-                    )}
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">
-                      Celular
-                    </label>
-                    <input
-                      name="celular"
-                      value={personal.celular}
-                      onChange={handleNumeric(setPersonal, "celular", 10)}
-                      onBlur={handleCelularBlur}
-                      className={inputClass("celular")}
-                      placeholder="09xxxxxxxx"
-                      inputMode="numeric"
-                      maxLength={10}
-                      pattern="^09\\d{8}$"
-                      required
-                    />
-                    {errors.celular && (
-                      <p className="mt-1 text-sm text-red-600">
-                        {errors.celular}
-                      </p>
-                    )}
-                    {checkingCelular && !errors.celular && (
-                      <p className="mt-1 text-xs text-gray-500">
-                        Verificando celular…
-                      </p>
-                    )}
-                    {celularExists === false && !errors.celular && (
-                      <p className="mt-1 text-xs text-green-600">
-                        Celular validado
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">
-                      Correo
-                    </label>
-                    <input
-                      type="email"
-                      name="email"
-                      value={personal.email}
-                      onChange={(e) => onChange(setPersonal, e)}
-                      onBlur={handleEmailBlur}
-                      className={inputClass("email")}
-                      required
-                    />
-                    {errors.email && (
-                      <p className="mt-1 text-sm text-red-600">
-                        {errors.email}
-                      </p>
-                    )}
-                    {checkingEmail && !errors.email && (
-                      <p className="mt-1 text-xs text-gray-500">
-                        Verificando correo…
-                      </p>
-                    )}
-                    {emailExists === false && !errors.email && (
-                      <p className="mt-1 text-xs text-green-600">
-                        Correo validado
-                      </p>
-                    )}
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">
-                      Fecha de nacimiento
-                    </label>
-                    <input
-                      type="date"
-                      name="fecha_nacimiento"
-                      value={personal.fecha_nacimiento}
-                      onChange={(e) => onChange(setPersonal, e)}
-                      className={inputClass("fecha_nacimiento")}
-                      required
-                    />
-                    {errors.fecha_nacimiento && (
-                      <p className="mt-1 text-sm text-red-600">
-                        {errors.fecha_nacimiento}
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                {/* === CONTRASEÑA con validación en vivo === */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">
-                      Contraseña
-                    </label>
-                    <div className="relative">
-                      <input
-                        type={showPass1 ? "text" : "password"}
-                        name="password"
-                        value={personal.password}
-                        onChange={(e) => {
-                          onChange(setPersonal, e);
-                          if (!pwdTouched) setPwdTouched(true);
-                        }}
-                        onFocus={() => setPwdTouched(true)}
-                        className={`w-full rounded-lg border px-4 py-2 pr-12 ${borderForPwdField(
-                          pwdStrong,
-                          pwdTouched,
-                          (personal.password ?? "").length === 0
-                        )}`}
-                        required
-                        aria-invalid={!!errors.password}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowPass1((v) => !v)}
-                        className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-md text-gray-600 hover:text-gray-800 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-300"
-                        aria-label={
-                          showPass1
-                            ? "Ocultar contraseña"
-                            : "Mostrar contraseña"
-                        }
-                        title={
-                          showPass1
-                            ? "Ocultar contraseña"
-                            : "Mostrar contraseña"
-                        }
-                      >
-                        {showPass1 ? (
-                          <EyeOff className="h-5 w-5" />
-                        ) : (
-                          <Eye className="h-5 w-5" />
-                        )}
-                      </button>
-                    </div>
-
-                    {/* Criterios en vivo */}
-                    <ul className="mt-2 text-xs space-y-1" aria-live="polite">
-                      <li className={hintColor(pwdHasMin, pwdTouched, pwd)}>
-                        • Mínimo 6 caracteres
-                      </li>
-                      <li className={hintColor(pwdHasUpper, pwdTouched, pwd)}>
-                        • Al menos 1 mayúscula (A–Z)
-                      </li>
-                      <li className={hintColor(pwdHasDigit, pwdTouched, pwd)}>
-                        • Al menos 1 número (0–9)
-                      </li>
-                    </ul>
-
-                    <p
-                      className={`mt-1 text-xs ${
-                        !pwdTouched && pwd.length === 0
-                          ? "text-gray-500"
-                          : pwdStrong
-                          ? "text-green-600"
-                          : "text-red-600"
-                      }`}
-                    >
-                      {!pwdTouched &&
-                        pwd.length === 0 &&
-                        "Escribe una contraseña que cumpla los requisitos."}
-                      {pwdTouched &&
-                        !pwdStrong &&
-                        "La contraseña aún no cumple los requisitos."}
-                      {pwdTouched &&
-                        pwdStrong &&
-                        "La contraseña cumple con el formato requerido."}
-                    </p>
-
-                    {errors.password && pwdTouched && !pwdStrong && (
-                      <p className="mt-1 text-sm text-red-600">
-                        {errors.password}
-                      </p>
-                    )}
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">
-                      Repite la contraseña
-                    </label>
-                    <div className="relative">
-                      <input
-                        type={showPass2 ? "text" : "password"}
-                        name="password2"
-                        value={personal.password2}
-                        onChange={(e) => {
-                          onChange(setPersonal, e);
-                          if (!pwd2Touched) setPwd2Touched(true);
-                        }}
-                        onFocus={() => setPwd2Touched(true)}
-                        className={`w-full rounded-lg border px-4 py-2 pr-12 ${borderForPwdField(
-                          pwdMatch,
-                          pwd2Touched,
-                          (personal.password2 ?? "").length === 0
-                        )}`}
-                        required
-                        aria-invalid={!!errors.password2}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowPass2((v) => !v)}
-                        className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-md text-gray-600 hover:text-gray-800 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-300"
-                        aria-label={
-                          showPass2
-                            ? "Ocultar contraseña"
-                            : "Mostrar contraseña"
-                        }
-                        title={
-                          showPass2
-                            ? "Ocultar contraseña"
-                            : "Mostrar contraseña"
-                        }
-                      >
-                        {showPass2 ? (
-                          <EyeOff className="h-5 w-5" />
-                        ) : (
-                          <Eye className="h-5 w-5" />
-                        )}
-                      </button>
-                    </div>
-
-                    <p
-                      className={`mt-1 text-xs ${
-                        !pwd2Touched && (personal.password2 ?? "").length === 0
-                          ? "text-gray-500"
-                          : pwdMatch
-                          ? "text-green-600"
-                          : "text-red-600"
-                      }`}
-                    >
-                      {!pwd2Touched &&
-                        (personal.password2 ?? "").length === 0 &&
-                        "Vuelve a escribir la contraseña."}
-                      {pwd2Touched &&
-                        !pwdMatch &&
-                        "Las contraseñas no coinciden."}
-                      {pwd2Touched &&
-                        pwdMatch &&
-                        "Ambas contraseñas coinciden."}
-                    </p>
-
-                    {errors.password2 && pwd2Touched && !pwdMatch && (
-                      <p className="mt-1 text-sm text-red-600">
-                        {errors.password2}
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <Link
-                    to="/login"
-                    className="inline-flex items-center h-10 leading-none text-sm text-gray-600 hover:underline"
+        {/* Columna izquierda */}
+        <div className="relative px-8 py-10 flex items-start justify-center">
+          <div className="w-full max-w-xl mt-24">
+            {/* Stepper */}
+            <div className="mb-6 flex items-center justify-center gap-6">
+              {[
+                { n: 1, t: "Datos personales" },
+                { n: 2, t: "Datos clínicos" },
+                { n: 3, t: "Contacto de emergencia" },
+                { n: 4, t: "Revisión" },
+              ].map((s) => (
+                <div key={s.n} className="flex items-center gap-2">
+                  <div
+                    className={`h-8 w-8 rounded-full grid place-items-center text-sm font-semibold ${
+                      step >= (s.n as 1 | 2 | 3 | 4)
+                        ? "text-white"
+                        : "bg-gray-200 text-gray-600"
+                    }`}
+                    style={
+                      step >= (s.n as 1 | 2 | 3 | 4)
+                        ? { backgroundColor: PRIMARY }
+                        : {}
+                    }
                   >
-                    ¿Ya tienes cuenta? Inicia sesión
-                  </Link>
-                  <button
-                    type="button"
-                    onClick={next}
-                    disabled={!canNextStep1}
-                    className="inline-flex items-center justify-center h-10 rounded-lg px-5 font-medium text-white disabled:opacity-70"
-                    style={{ backgroundColor: PRIMARY }}
-                  >
-                    Siguiente
-                  </button>
+                    {s.n}
+                  </div>
+                  <span className="hidden sm:block text-sm text-gray-700">
+                    {s.t}
+                  </span>
                 </div>
-              </>
+              ))}
+            </div>
+
+            <h1 className="text-3xl font-semibold text-center text-gray-900 mb-4">
+              Registrarse
+            </h1>
+
+            {errorTop && (
+              <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {errorTop}
+              </div>
             )}
 
-            {/* PASO 2: Datos clínicos + Antecedentes */}
-            {step === 2 && (
-              <>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700">
-                    Sexo
-                  </label>
-                  <select
-                    name="sexo"
-                    value={clinico.sexo}
-                    onChange={(e) => onChange(setClinico, e)}
-                    className={inputClass("sexo")}
-                    required
-                  >
-                    <option value="">Selecciona…</option>
-                    <option value="M">Masculino</option>
-                    <option value="F">Femenino</option>
-                  </select>
-                  {errors.sexo && (
-                    <p className="mt-1 text-sm text-red-600">{errors.sexo}</p>
-                  )}
-                </div>
+            <form onSubmit={handleSubmit} className="space-y-6">
+              {/* PASO 1: Foto + Datos personales */}
+              {step === 1 && (
+                <>
+                  {/* Foto (opcional) */}
+                  <div className="rounded-lg border p-4 bg-gray-50 flex flex-col items-center justify-center">
+                    <label className="block text-sm font-medium text-gray-700 mb-3 text-center">
+                      Foto (opcional)
+                    </label>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700">
-                    Tipo de sangre
-                  </label>
-                  <select
-                    name="tipo_sangre"
-                    value={clinico.tipo_sangre}
-                    onChange={(e) => onChange(setClinico, e)}
-                    className={inputClass("tipo_sangre")}
-                    required
-                  >
-                    <option value="">Selecciona…</option>
-                    <option value="Desconocido">Desconocido</option>
-                    {["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"].map(
-                      (g) => (
-                        <option key={g} value={g}>
-                          {g}
-                        </option>
-                      )
-                    )}
-                  </select>
-                  {errors.tipo_sangre && (
-                    <p className="mt-1 text-sm text-red-600">
-                      {errors.tipo_sangre}
-                    </p>
-                  )}
-                </div>
-
-                {/* Enfermedades propias */}
-                <div className="mt-6">
-                  <h3 className="text-sm font-semibold text-gray-800 mb-2">
-                    Enfermedades propias (opcional)
-                  </h3>
-
-                  {propias.length === 0 && (
-                    <p className="text-sm text-gray-500 mb-2">
-                      No has añadido ninguna.
-                    </p>
-                  )}
-
-                  <div className="space-y-3">
-                    {propias.map((row) => (
-                      <div
-                        key={row.id}
-                        className="rounded-lg border border-gray-200 p-3"
-                      >
-                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                          <AntecedenteSelect
-                            value={row.sel}
-                            onChangeSel={(val) =>
-                              setPropias((arr) =>
-                                arr.map((r) =>
-                                  r.id === row.id ? { ...r, sel: val } : r
-                                )
-                              )
-                            }
+                    <div className="flex flex-col items-center gap-4 w-full">
+                      {/* Avatar / preview */}
+                      <div className="w-32 h-32 rounded-full overflow-hidden border bg-white grid place-items-center mb-2">
+                        {fotoPreview ? (
+                          <img
+                            src={fotoPreview}
+                            alt="Vista previa"
+                            className="w-full h-full object-cover"
                           />
+                        ) : (
+                          <User className="w-12 h-12 text-gray-400" />
+                        )}
+                      </div>
+
+                      {/* Controles */}
+                      <div className="flex items-center gap-2">
+                        <input
+                          id="fotoPacientePublic"
+                          ref={fotoInputRef}
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={handleSelectFoto}
+                        />
+                        <label
+                          htmlFor="fotoPacientePublic"
+                          className="cursor-pointer rounded-lg bg-gray-800 text-white px-4 py-2 shadow hover:bg-black/80"
+                        >
+                          Seleccionar archivo
+                        </label>
+
+                        {foto && (
                           <button
                             type="button"
-                            onClick={() =>
-                              setPropias((arr) =>
-                                arr.filter((r) => r.id !== row.id)
-                              )
-                            }
-                            className="self-start rounded-md border px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                            onClick={handleClearFoto}
+                            className="rounded-lg border bg-white px-4 py-2 hover:bg-gray-50"
+                            title="Quitar la foto seleccionada"
                           >
-                            Quitar
+                            Quitar selección
                           </button>
-                        </div>
+                        )}
                       </div>
-                    ))}
+                    </div>
+
+                    <p className="text-xs text-gray-500 mt-2 text-center">
+                      Formatos: JPG/PNG. Recomendado: imagen cuadrada para mejor
+                      encuadre.
+                    </p>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (propias.length >= MAX_PROP || propiasIncomplete)
-                        return;
-                      setPropias((arr) => [...arr, { id: makeId(), sel: "" }]);
-                    }}
-                    className="mt-3 rounded-lg px-4 py-2 text-white disabled:opacity-60"
-                    style={{ backgroundColor: PRIMARY }}
-                    disabled={
-                      loadingAnt ||
-                      !!errorAnt ||
-                      antecedentes.length === 0 ||
-                      propias.length >= MAX_PROP ||
-                      propiasIncomplete
-                    }
-                  >
-                    {propias.length >= MAX_PROP
-                      ? "Límite alcanzado (3)"
-                      : "Añadir enfermedad propia"}
-                  </button>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700">
+                        Primer nombre
+                      </label>
+                      <input
+                        name="primer_nombre"
+                        value={personal.primer_nombre}
+                        onChange={(e) => onChange(setPersonal, e)}
+                        className={inputClass("primer_nombre")}
+                        required
+                      />
+                      {errors.primer_nombre && (
+                        <p className="mt-1 text-sm text-red-600">
+                          {errors.primer_nombre}
+                        </p>
+                      )}
+                    </div>
+                    {/* Segundo nombre OPCIONAL */}
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700">
+                        Segundo nombre (Opcional)
+                      </label>
+                      <input
+                        name="segundo_nombre"
+                        value={personal.segundo_nombre}
+                        onChange={(e) => onChange(setPersonal, e)}
+                        className="w-full rounded-lg border border-gray-300 px-4 py-2"
+                      />
+                    </div>
 
-                  {propiasIncomplete && (
-                    <p className="mt-1 text-xs text-red-600">
-                      Primero selecciona la enfermedad anterior o quítala.
-                    </p>
-                  )}
-                </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700">
+                        Primer apellido
+                      </label>
+                      <input
+                        name="primer_apellido"
+                        value={personal.primer_apellido}
+                        onChange={(e) => onChange(setPersonal, e)}
+                        className={inputClass("primer_apellido")}
+                        required
+                      />
+                      {errors.primer_apellido && (
+                        <p className="mt-1 text-sm text-red-600">
+                          {errors.primer_apellido}
+                        </p>
+                      )}
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700">
+                        Segundo apellido
+                      </label>
+                      <input
+                        name="segundo_apellido"
+                        value={personal.segundo_apellido}
+                        onChange={(e) => onChange(setPersonal, e)}
+                        className={inputClass("segundo_apellido")}
+                        required
+                      />
+                      {errors.segundo_apellido && (
+                        <p className="mt-1 text-sm text-red-600">
+                          {errors.segundo_apellido}
+                        </p>
+                      )}
+                    </div>
+                  </div>
 
-                {/* Antecedentes familiares */}
-                <div className="mt-8">
-                  <h3 className="text-sm font-semibold text-gray-800 mb-2">
-                    Antecedentes familiares (opcional)
-                  </h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700">
+                        Cédula
+                      </label>
+                      <input
+                        name="cedula"
+                        value={personal.cedula}
+                        onChange={handleNumeric(setPersonal, "cedula", 10)}
+                        onBlur={handleCedulaBlur}
+                        className={inputClass("cedula")}
+                        placeholder="10 dígitos"
+                        inputMode="numeric"
+                        maxLength={10}
+                        pattern="\\d{10}"
+                        required
+                      />
+                      {errors.cedula && (
+                        <p className="mt-1 text-sm text-red-600">
+                          {errors.cedula}
+                        </p>
+                      )}
+                      {checkingCedula && !errors.cedula && (
+                        <p className="mt-1 text-xs text-gray-500">
+                          Verificando cédula…
+                        </p>
+                      )}
+                      {cedulaExists === false && !errors.cedula && (
+                        <p className="mt-1 text-xs text-green-600">
+                          Cédula validada
+                        </p>
+                      )}
+                    </div>
 
-                  {familiares.length === 0 && (
-                    <p className="text-sm text-gray-500 mb-2">
-                      No has añadido ninguno.
-                    </p>
-                  )}
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700">
+                        Celular
+                      </label>
+                      <input
+                        name="celular"
+                        value={personal.celular}
+                        onChange={handleNumeric(setPersonal, "celular", 10)}
+                        onBlur={handleCelularBlur}
+                        className={inputClass("celular")}
+                        placeholder="09xxxxxxxx"
+                        inputMode="numeric"
+                        maxLength={10}
+                        pattern="^09\\d{8}$"
+                        required
+                      />
+                      {errors.celular && (
+                        <p className="mt-1 text-sm text-red-600">
+                          {errors.celular}
+                        </p>
+                      )}
+                      {checkingCelular && !errors.celular && (
+                        <p className="mt-1 text-xs text-gray-500">
+                          Verificando celular…
+                        </p>
+                      )}
+                      {celularExists === false && !errors.celular && (
+                        <p className="mt-1 text-xs text-green-600">
+                          Celular validado
+                        </p>
+                      )}
+                    </div>
+                  </div>
 
-                  <div className="space-y-3">
-                    {familiares.map((row) => (
-                      <div
-                        key={row.id}
-                        className="rounded-lg border border-gray-200 p-3"
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700">
+                        Correo
+                      </label>
+                      <input
+                        type="email"
+                        name="email"
+                        value={personal.email}
+                        onChange={(e) => onChange(setPersonal, e)}
+                        onBlur={handleEmailBlur}
+                        className={inputClass("email")}
+                        required
+                      />
+                      {errors.email && (
+                        <p className="mt-1 text-sm text-red-600">
+                          {errors.email}
+                        </p>
+                      )}
+                      {checkingEmail && !errors.email && (
+                        <p className="mt-1 text-xs text-gray-500">
+                          Verificando correo…
+                        </p>
+                      )}
+                      {emailExists === false && !errors.email && (
+                        <p className="mt-1 text-xs text-green-600">
+                          Correo validado
+                        </p>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700">
+                        Fecha de nacimiento
+                      </label>
+                      <input
+                        type="date"
+                        name="fecha_nacimiento"
+                        value={personal.fecha_nacimiento}
+                        onChange={(e) => {
+                          onChange(setPersonal, e);
+                          if (!fechaTouched) setFechaTouched(true);
+                        }}
+                        onFocus={() => setFechaTouched(true)}
+                        className={`w-full rounded-lg border px-4 py-2 ${borderForPwdField(
+                          fechaOk,
+                          fechaTouched,
+                          !fechaHasValue
+                        )}`}
+                        required
+                      />
+                      <p
+                        className={`mt-1 text-xs ${
+                          !fechaTouched && !fechaHasValue
+                            ? "text-gray-500"
+                            : fechaOk
+                            ? "text-green-600"
+                            : "text-red-600"
+                        }`}
                       >
-                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                          <AntecedenteSelect
-                            value={row.sel}
-                            onChangeSel={(val) =>
-                              setFamiliares((arr) =>
-                                arr.map((r) =>
-                                  r.id === row.id ? { ...r, sel: val } : r
-                                )
-                              )
-                            }
-                            withRelacion
-                            relacion={row.relacion}
-                            onChangeRelacion={(rel) =>
-                              setFamiliares((arr) =>
-                                arr.map((r) =>
-                                  r.id === row.id ? { ...r, relacion: rel } : r
-                                )
-                              )
-                            }
-                          />
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setFamiliares((arr) =>
-                                arr.filter((r) => r.id !== row.id)
-                              )
-                            }
-                            className="self-start sm:ml-auto rounded-md border px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                          >
-                            Quitar
-                          </button>
-                        </div>
-                      </div>
-                    ))}
+                        {!fechaTouched &&
+                          !fechaHasValue &&
+                          "Selecciona tu fecha de nacimiento"}
+                        {fechaTouched &&
+                          fechaHasValue &&
+                          !fechaOk &&
+                          fechaErrorMsg}
+                        {fechaTouched && fechaOk && "Fecha válida"}
+                      </p>
+                    </div>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (familiares.length >= MAX_FAM || familiaresIncomplete)
-                        return;
-                      setFamiliares((arr) => [
-                        ...arr,
-                        { id: makeId(), sel: "", relacion: "padres" },
-                      ]);
-                    }}
-                    className="mt-3 rounded-lg px-4 py-2 text-white disabled:opacity-60"
-                    style={{ backgroundColor: PRIMARY }}
-                    disabled={
-                      familiares.length >= MAX_FAM || familiaresIncomplete
-                    }
-                  >
-                    {familiares.length >= MAX_FAM
-                      ? "Límite alcanzado (3)"
-                      : "Añadir antecedente familiar"}
-                  </button>
+                  {/* === CONTRASEÑA con validación en vivo === */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700">
+                        Contraseña
+                      </label>
+                      <div className="relative">
+                        <input
+                          type={showPass1 ? "text" : "password"}
+                          name="password"
+                          value={personal.password}
+                          onChange={(e) => {
+                            onChange(setPersonal, e);
+                            if (!pwdTouched) setPwdTouched(true);
+                          }}
+                          onFocus={() => setPwdTouched(true)}
+                          className={`w-full rounded-lg border px-4 py-2 pr-12 ${borderForPwdField(
+                            pwdStrong,
+                            pwdTouched,
+                            (personal.password ?? "").length === 0
+                          )}`}
+                          required
+                          aria-invalid={!!errors.password}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPass1((v) => !v)}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-md text-gray-600 hover:text-gray-800 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-300"
+                          aria-label={
+                            showPass1
+                              ? "Ocultar contraseña"
+                              : "Mostrar contraseña"
+                          }
+                          title={
+                            showPass1
+                              ? "Ocultar contraseña"
+                              : "Mostrar contraseña"
+                          }
+                        >
+                          {showPass1 ? (
+                            <EyeOff className="h-5 w-5" />
+                          ) : (
+                            <Eye className="h-5 w-5" />
+                          )}
+                        </button>
+                      </div>
 
-                  {familiaresIncomplete && (
-                    <p className="mt-1 text-xs text-red-600">
-                      Primero selecciona el antecedente anterior o quítalo.
-                    </p>
-                  )}
-                </div>
+                      {/* Criterios en vivo */}
+                      <ul className="mt-2 text-xs space-y-1" aria-live="polite">
+                        <li className={hintColor(pwdHasMin, pwdTouched, pwd)}>
+                          • Mínimo 8 caracteres
+                        </li>
+                        <li className={hintColor(pwdHasUpper, pwdTouched, pwd)}>
+                          • Al menos 1 mayúscula (A–Z)
+                        </li>
+                        <li className={hintColor(pwdHasDigit, pwdTouched, pwd)}>
+                          • Al menos 1 número (0–9)
+                        </li>
+                      </ul>
 
-                <div className="flex items-center justify-between">
-                  <button
-                    type="button"
-                    onClick={back}
-                    className="inline-flex items-center justify-center h-10 rounded-lg border border-gray-300 px-4 text-gray-700 hover:bg-gray-50"
-                  >
-                    Atrás
-                  </button>
+                      <p
+                        className={`mt-1 text-xs ${
+                          !pwdTouched && pwd.length === 0
+                            ? "text-gray-500"
+                            : pwdStrong
+                            ? "text-green-600"
+                            : "text-red-600"
+                        }`}
+                      >
+                        {!pwdTouched &&
+                          pwd.length === 0 &&
+                          "Escribe una contraseña que cumpla los requisitos."}
+                        {pwdTouched &&
+                          !pwdStrong &&
+                          "La contraseña aún no cumple los requisitos."}
+                        {pwdTouched &&
+                          pwdStrong &&
+                          "La contraseña cumple con el formato requerido."}
+                      </p>
 
-                  <div className="flex gap-3">
+                      {errors.password && pwdTouched && !pwdStrong && (
+                        <p className="mt-1 text-sm text-red-600">
+                          {errors.password}
+                        </p>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700">
+                        Repite la contraseña
+                      </label>
+                      <div className="relative">
+                        <input
+                          type={showPass2 ? "text" : "password"}
+                          name="password2"
+                          value={personal.password2}
+                          onChange={(e) => {
+                            onChange(setPersonal, e);
+                            if (!pwd2Touched) setPwd2Touched(true);
+                          }}
+                          onFocus={() => setPwd2Touched(true)}
+                          className={`w-full rounded-lg border px-4 py-2 pr-12 ${borderForPwdField(
+                            pwdMatch,
+                            pwd2Touched,
+                            (personal.password2 ?? "").length === 0
+                          )}`}
+                          required
+                          aria-invalid={!!errors.password2}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPass2((v) => !v)}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-md text-gray-600 hover:text-gray-800 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-300"
+                          aria-label={
+                            showPass2
+                              ? "Ocultar contraseña"
+                              : "Mostrar contraseña"
+                          }
+                          title={
+                            showPass2
+                              ? "Ocultar contraseña"
+                              : "Mostrar contraseña"
+                          }
+                        >
+                          {showPass2 ? (
+                            <EyeOff className="h-5 w-5" />
+                          ) : (
+                            <Eye className="h-5 w-5" />
+                          )}
+                        </button>
+                      </div>
+
+                      <p
+                        className={`mt-1 text-xs ${
+                          !pwd2Touched &&
+                          (personal.password2 ?? "").length === 0
+                            ? "text-gray-500"
+                            : pwdMatch
+                            ? "text-green-600"
+                            : "text-red-600"
+                        }`}
+                      >
+                        {!pwd2Touched &&
+                          (personal.password2 ?? "").length === 0 &&
+                          "Vuelve a escribir la contraseña."}
+                        {pwd2Touched &&
+                          !pwdMatch &&
+                          "Las contraseñas no coinciden."}
+                        {pwd2Touched &&
+                          pwdMatch &&
+                          "Ambas contraseñas coinciden."}
+                      </p>
+
+                      {errors.password2 && pwd2Touched && !pwdMatch && (
+                        <p className="mt-1 text-sm text-red-600">
+                          {errors.password2}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between">
                     <Link
                       to="/login"
                       className="inline-flex items-center h-10 leading-none text-sm text-gray-600 hover:underline"
                     >
-                      Cancelar
+                      ¿Ya tienes cuenta? Inicia sesión
                     </Link>
                     <button
                       type="button"
                       onClick={next}
-                      className="inline-flex items-center justify-center h-10 rounded-lg px-5 font-medium text-white"
+                      disabled={!canNextStep1}
+                      className="inline-flex items-center justify-center h-10 rounded-lg px-5 font-medium text-white disabled:opacity-70"
                       style={{ backgroundColor: PRIMARY }}
                     >
-                      Continuar
+                      Siguiente
                     </button>
                   </div>
-                </div>
-              </>
-            )}
+                </>
+              )}
 
-            {/* PASO 3: Contacto de emergencia */}
-            {step === 3 && (
-              <>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* PASO 2: Datos clínicos + Antecedentes */}
+              {step === 2 && (
+                <>
                   <div>
                     <label className="block text-sm font-medium text-gray-700">
-                      Nombre contacto emergencia
-                    </label>
-                    <input
-                      name="contacto_emergencia_nom"
-                      value={emergencia.contacto_emergencia_nom}
-                      onChange={(e) => onChange(setEmergencia, e)}
-                      className={inputClass("contacto_emergencia_nom")}
-                      placeholder="Nombre y apellido"
-                      required
-                    />
-                    {errors.contacto_emergencia_nom && (
-                      <p className="mt-1 text-sm text-red-600">
-                        {errors.contacto_emergencia_nom}
-                      </p>
-                    )}
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">
-                      Celular emergencia
-                    </label>
-                    <input
-                      name="contacto_emergencia_cel"
-                      value={emergencia.contacto_emergencia_cel}
-                      onChange={handleNumeric(
-                        setEmergencia,
-                        "contacto_emergencia_cel",
-                        10
-                      )}
-                      className={inputClass("contacto_emergencia_cel")}
-                      placeholder="09xxxxxxxx"
-                      inputMode="numeric"
-                      maxLength={10}
-                      required
-                    />
-                    {errors.contacto_emergencia_cel && (
-                      <p className="mt-1 text-sm text-red-600">
-                        {errors.contacto_emergencia_cel}
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="sm:col-span-2">
-                    <label className="block text-sm font-medium text-gray-700">
-                      Parentesco
+                      Sexo
                     </label>
                     <select
-                      name="parSelect"
-                      value={emergencia.parSelect}
-                      onChange={(e) => onChange(setEmergencia, e)}
-                      className={`w-full rounded-lg border px-4 py-2 ${
-                        errors.parSelect
-                          ? "border-red-500 focus:ring-2 focus:ring-red-500"
-                          : "border-gray-300"
-                      }`}
+                      name="sexo"
+                      value={clinico.sexo}
+                      onChange={(e) => onChange(setClinico, e)}
+                      className={inputClass("sexo")}
                       required
                     >
                       <option value="">Selecciona…</option>
-                      <option value="hijos">Hijos</option>
-                      <option value="padres">Padres</option>
-                      <option value="hermanos">Hermanos</option>
-                      <option value="abuelos">Abuelos</option>
-                      <option value="esposos">Esposos</option>
-                      <option value="otros">Otros</option>
+                      <option value="M">Masculino</option>
+                      <option value="F">Femenino</option>
                     </select>
-                    {errors.parSelect && (
+                    {errors.sexo && (
+                      <p className="mt-1 text-sm text-red-600">{errors.sexo}</p>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">
+                      Tipo de sangre
+                    </label>
+                    <select
+                      name="tipo_sangre"
+                      value={clinico.tipo_sangre}
+                      onChange={(e) => onChange(setClinico, e)}
+                      className={inputClass("tipo_sangre")}
+                      required
+                    >
+                      <option value="">Selecciona…</option>
+                      <option value="Desconocido">Desconocido</option>
+                      {["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"].map(
+                        (g) => (
+                          <option key={g} value={g}>
+                            {g}
+                          </option>
+                        )
+                      )}
+                    </select>
+                    {errors.tipo_sangre && (
                       <p className="mt-1 text-sm text-red-600">
-                        {errors.parSelect}
+                        {errors.tipo_sangre}
                       </p>
                     )}
                   </div>
-                </div>
 
-                <div className="flex items-center justify-between">
-                  <button
-                    type="button"
-                    onClick={back}
-                    className="inline-flex items-center justify-center h-10 rounded-lg border border-gray-300 px-4 text-gray-700 hover:bg-gray-50"
-                  >
-                    Atrás
-                  </button>
+                  {/* Enfermedades propias */}
+                  <div className="mt-6">
+                    <h3 className="text-sm font-semibold text-gray-800 mb-2">
+                      Enfermedades propias (opcional)
+                    </h3>
 
-                  <div className="flex gap-3">
-                    <Link
-                      to="/login"
-                      className="inline-flex items-center h-10 leading-none text-sm text-gray-600 hover:underline"
-                    >
-                      Cancelar
-                    </Link>
+                    {propias.length === 0 && (
+                      <p className="text-sm text-gray-500 mb-2">
+                        No has añadido ninguna.
+                      </p>
+                    )}
+
+                    <div className="space-y-3">
+                      {propias.map((row) => (
+                        <div
+                          key={row.id}
+                          className="rounded-lg border border-gray-200 p-3"
+                        >
+                          <div className="flex flex-col sm:flex-row gap-3 sm:items-start">
+                            <div className="flex-1 min-w-0">
+                              <AntecedenteSelect
+                                value={row.sel}
+                                onChangeSel={(val) =>
+                                  setPropias((arr) =>
+                                    arr.map((r) =>
+                                      r.id === row.id ? { ...r, sel: val } : r
+                                    )
+                                  )
+                                }
+                                currentId={row.id}
+                              />
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setPropias((arr) =>
+                                  arr.filter((r) => r.id !== row.id)
+                                )
+                              }
+                              className="self-start sm:self-center rounded-md border px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 whitespace-nowrap"
+                            >
+                              Quitar
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
                     <button
                       type="button"
-                      onClick={next}
-                      className="inline-flex items-center justify-center h-10 rounded-lg px-5 font-medium text-white"
+                      onClick={() => {
+                        if (propias.length >= MAX_PROP || propiasIncomplete)
+                          return;
+                        setPropias((arr) => [
+                          ...arr,
+                          { id: makeId(), sel: "" },
+                        ]);
+                      }}
+                      className="mt-3 rounded-lg px-4 py-2 text-white disabled:opacity-60"
                       style={{ backgroundColor: PRIMARY }}
+                      disabled={
+                        loadingAnt ||
+                        !!errorAnt ||
+                        antecedentes.length === 0 ||
+                        propias.length >= MAX_PROP ||
+                        propiasIncomplete
+                      }
                     >
-                      Continuar
+                      {propias.length >= MAX_PROP
+                        ? "Límite alcanzado (3)"
+                        : "Añadir enfermedad propia"}
                     </button>
-                  </div>
-                </div>
-              </>
-            )}
 
-            {/* PASO 4: Revisión */}
-            {step === 4 && (
-              <div className="space-y-4">
-                <h3 className="font-semibold">Revisión</h3>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-                  <div>
-                    <strong>Nombre:</strong> {personal.primer_nombre}{" "}
-                    {personal.segundo_nombre} {personal.primer_apellido}{" "}
-                    {personal.segundo_apellido}
-                  </div>
-                  <div>
-                    <strong>Cédula:</strong> {personal.cedula}
-                  </div>
-                  <div>
-                    <strong>Correo:</strong> {personal.email}
-                  </div>
-                  <div>
-                    <strong>Celular:</strong> {personal.celular}
-                  </div>
-                  <div>
-                    <strong>Fecha de nacimiento:</strong>{" "}
-                    {personal.fecha_nacimiento || "—"}
-                  </div>
-                  <div>
-                    <strong>Sexo:</strong> {sexoLabel(clinico.sexo)}
-                  </div>
-                  <div>
-                    <strong>Tipo de sangre:</strong>{" "}
-                    {clinico.tipo_sangre || "—"}
+                    {propiasIncomplete && (
+                      <p className="mt-1 text-xs text-red-600">
+                        Primero selecciona la enfermedad anterior o quítala.
+                      </p>
+                    )}
                   </div>
 
-                  <div className="sm:col-span-2">
-                    <strong>Enfermedades propias:</strong>{" "}
-                    {propias.filter((p) => p.sel).length === 0
-                      ? "—"
-                      : propias
-                          .filter((p) => p.sel)
-                          .map((p) => nombreAntecedente(p.sel as number))
-                          .join(", ")}
-                  </div>
-                  <div className="sm:col-span-2">
-                    <strong>Antecedentes familiares:</strong>{" "}
-                    {familiares.filter((f) => f.sel).length === 0
-                      ? "—"
-                      : familiares
-                          .filter((f) => f.sel)
-                          .map(
-                            (f) =>
-                              `${nombreAntecedente(f.sel as number)} (${
-                                f.relacion
-                              })`
-                          )
-                          .join(", ")}
-                  </div>
+                  {/* Antecedentes familiares */}
+                  <div className="mt-8">
+                    <h3 className="text-sm font-semibold text-gray-800 mb-2">
+                      Antecedentes familiares (opcional)
+                    </h3>
 
-                  <div className="sm:col-span-2">
-                    <strong>Contacto de emergencia:</strong>{" "}
-                    {emergencia.contacto_emergencia_nom || "—"} —{" "}
-                    {emergencia.contacto_emergencia_cel || "—"} —{" "}
-                    {emergencia.parSelect || "—"}
-                  </div>
-                </div>
+                    {familiares.length === 0 && (
+                      <p className="text-sm text-gray-500 mb-2">
+                        No has añadido ninguno.
+                      </p>
+                    )}
 
-                <div className="flex items-center justify-between">
-                  <button
-                    type="button"
-                    onClick={back}
-                    className="inline-flex items-center justify-center h-10 rounded-lg border px-4 text-gray-700 hover:bg-gray-50"
-                  >
-                    Atrás
-                  </button>
-                  <div className="flex items-center gap-3">
-                    <Link
-                      to="/login"
-                      className="inline-flex items-center h-10 leading-none text-sm text-gray-600 hover:underline"
-                    >
-                      Cancelar
-                    </Link>
+                    <div className="space-y-3">
+                      {familiares.map((row) => (
+                        <div
+                          key={row.id}
+                          className="rounded-lg border border-gray-200 p-3"
+                        >
+                          <div className="flex flex-col sm:flex-row gap-3 sm:items-start">
+                            <div className="flex-1 min-w-0">
+                              <AntecedenteSelect
+                                value={row.sel}
+                                onChangeSel={(val) =>
+                                  setFamiliares((arr) =>
+                                    arr.map((r) =>
+                                      r.id === row.id ? { ...r, sel: val } : r
+                                    )
+                                  )
+                                }
+                                withRelacion
+                                relacion={row.relacion}
+                                onChangeRelacion={(rel) =>
+                                  setFamiliares((arr) =>
+                                    arr.map((r) =>
+                                      r.id === row.id
+                                        ? { ...r, relacion: rel }
+                                        : r
+                                    )
+                                  )
+                                }
+                                currentId={row.id}
+                              />
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setFamiliares((arr) =>
+                                  arr.filter((r) => r.id !== row.id)
+                                )
+                              }
+                              className="self-start sm:self-center rounded-md border px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 whitespace-nowrap"
+                            >
+                              Quitar
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
                     <button
-                      type="submit"
-                      disabled={loading}
-                      className="inline-flex items-center justify-center h-10 gap-2 rounded-lg px-5 font-medium text-white disabled:opacity-60"
+                      type="button"
+                      onClick={() => {
+                        if (
+                          familiares.length >= MAX_FAM ||
+                          familiaresIncomplete
+                        )
+                          return;
+                        setFamiliares((arr) => [
+                          ...arr,
+                          { id: makeId(), sel: "", relacion: "padres" },
+                        ]);
+                      }}
+                      className="mt-3 rounded-lg px-4 py-2 text-white disabled:opacity-60"
                       style={{ backgroundColor: PRIMARY }}
+                      disabled={
+                        familiares.length >= MAX_FAM || familiaresIncomplete
+                      }
                     >
-                      {loading ? "Registrando…" : "Registrar"}
+                      {familiares.length >= MAX_FAM
+                        ? "Límite alcanzado (3)"
+                        : "Añadir antecedente familiar"}
                     </button>
+
+                    {familiaresIncomplete && (
+                      <p className="mt-1 text-xs text-red-600">
+                        Primero selecciona el antecedente anterior o quítalo.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <button
+                      type="button"
+                      onClick={back}
+                      className="inline-flex items-center justify-center h-10 rounded-lg border border-gray-300 px-4 text-gray-700 hover:bg-gray-50"
+                    >
+                      Atrás
+                    </button>
+
+                    <div className="flex gap-3">
+                      <Link
+                        to="/login"
+                        className="inline-flex items-center h-10 leading-none text-sm text-gray-600 hover:underline"
+                      >
+                        Cancelar
+                      </Link>
+                      <button
+                        type="button"
+                        onClick={next}
+                        className="inline-flex items-center justify-center h-10 rounded-lg px-5 font-medium text-white"
+                        style={{ backgroundColor: PRIMARY }}
+                      >
+                        Continuar
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* PASO 3: Contacto de emergencia */}
+              {step === 3 && (
+                <>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700">
+                        Nombre contacto emergencia
+                      </label>
+                      <input
+                        name="contacto_emergencia_nom"
+                        value={emergencia.contacto_emergencia_nom}
+                        onChange={(e) => onChange(setEmergencia, e)}
+                        className={inputClass("contacto_emergencia_nom")}
+                        placeholder="Nombre y apellido"
+                        required
+                      />
+                      {errors.contacto_emergencia_nom && (
+                        <p className="mt-1 text-sm text-red-600">
+                          {errors.contacto_emergencia_nom}
+                        </p>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700">
+                        Celular emergencia
+                      </label>
+                      <input
+                        name="contacto_emergencia_cel"
+                        value={emergencia.contacto_emergencia_cel}
+                        onChange={handleNumeric(
+                          setEmergencia,
+                          "contacto_emergencia_cel",
+                          10
+                        )}
+                        className={inputClass("contacto_emergencia_cel")}
+                        placeholder="09xxxxxxxx"
+                        inputMode="numeric"
+                        maxLength={10}
+                        required
+                      />
+                      {errors.contacto_emergencia_cel && (
+                        <p className="mt-1 text-sm text-red-600">
+                          {errors.contacto_emergencia_cel}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="sm:col-span-2">
+                      <label className="block text-sm font-medium text-gray-700">
+                        Parentesco
+                      </label>
+                      <select
+                        name="parSelect"
+                        value={emergencia.parSelect}
+                        onChange={(e) => onChange(setEmergencia, e)}
+                        className={`w-full rounded-lg border px-4 py-2 ${
+                          errors.parSelect
+                            ? "border-red-500 focus:ring-2 focus:ring-red-500"
+                            : "border-gray-300"
+                        }`}
+                        required
+                      >
+                        <option value="">Selecciona…</option>
+                        <option value="hijos">Hijos</option>
+                        <option value="padres">Padres</option>
+                        <option value="hermanos">Hermanos</option>
+                        <option value="abuelos">Abuelos</option>
+                        <option value="esposos">Esposos</option>
+                        <option value="otros">Otros</option>
+                      </select>
+                      {errors.parSelect && (
+                        <p className="mt-1 text-sm text-red-600">
+                          {errors.parSelect}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <button
+                      type="button"
+                      onClick={back}
+                      className="inline-flex items-center justify-center h-10 rounded-lg border border-gray-300 px-4 text-gray-700 hover:bg-gray-50"
+                    >
+                      Atrás
+                    </button>
+
+                    <div className="flex gap-3">
+                      <Link
+                        to="/login"
+                        className="inline-flex items-center h-10 leading-none text-sm text-gray-600 hover:underline"
+                      >
+                        Cancelar
+                      </Link>
+                      <button
+                        type="button"
+                        onClick={next}
+                        className="inline-flex items-center justify-center h-10 rounded-lg px-5 font-medium text-white"
+                        style={{ backgroundColor: PRIMARY }}
+                      >
+                        Continuar
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* PASO 4: Revisión */}
+              {step === 4 && (
+                <div className="space-y-4">
+                  <h3 className="font-semibold">Revisión</h3>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                    <div>
+                      <strong>Nombre:</strong> {personal.primer_nombre}{" "}
+                      {personal.segundo_nombre} {personal.primer_apellido}{" "}
+                      {personal.segundo_apellido}
+                    </div>
+                    <div>
+                      <strong>Cédula:</strong> {personal.cedula}
+                    </div>
+                    <div>
+                      <strong>Correo:</strong> {personal.email}
+                    </div>
+                    <div>
+                      <strong>Celular:</strong> {personal.celular}
+                    </div>
+                    <div>
+                      <strong>Fecha de nacimiento:</strong>{" "}
+                      {personal.fecha_nacimiento || "—"}
+                    </div>
+                    <div>
+                      <strong>Sexo:</strong> {sexoLabel(clinico.sexo)}
+                    </div>
+                    <div>
+                      <strong>Tipo de sangre:</strong>{" "}
+                      {clinico.tipo_sangre || "—"}
+                    </div>
+
+                    <div className="sm:col-span-2">
+                      <strong>Enfermedades propias:</strong>{" "}
+                      {propias.filter((p) => p.sel).length === 0
+                        ? "—"
+                        : propias
+                            .filter((p) => p.sel)
+                            .map((p) => nombreAntecedente(p.sel as number))
+                            .join(", ")}
+                    </div>
+                    <div className="sm:col-span-2">
+                      <strong>Antecedentes familiares:</strong>{" "}
+                      {familiares.filter((f) => f.sel).length === 0
+                        ? "—"
+                        : familiares
+                            .filter((f) => f.sel)
+                            .map(
+                              (f) =>
+                                `${nombreAntecedente(f.sel as number)} (${
+                                  f.relacion
+                                })`
+                            )
+                            .join(", ")}
+                    </div>
+
+                    <div className="sm:col-span-2">
+                      <strong>Contacto de emergencia:</strong>{" "}
+                      {emergencia.contacto_emergencia_nom || "—"} —{" "}
+                      {emergencia.contacto_emergencia_cel || "—"} —{" "}
+                      {emergencia.parSelect || "—"}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <button
+                      type="button"
+                      onClick={back}
+                      className="inline-flex items-center justify-center h-10 rounded-lg border px-4 text-gray-700 hover:bg-gray-50"
+                    >
+                      Atrás
+                    </button>
+                    <div className="flex items-center gap-3">
+                      <Link
+                        to="/login"
+                        className="inline-flex items-center h-10 leading-none text-sm text-gray-600 hover:underline"
+                      >
+                        Cancelar
+                      </Link>
+                      <button
+                        type="submit"
+                        disabled={loading}
+                        className="inline-flex items-center justify-center h-10 gap-2 rounded-lg px-5 font-medium text-white disabled:opacity-60"
+                        style={{ backgroundColor: PRIMARY }}
+                      >
+                        {loading ? "Registrando…" : "Registrar"}
+                      </button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
-          </form>
+              )}
+            </form>
+          </div>
+        </div>
+
+        {/* Columna derecha: imagen */}
+        <div className="hidden lg:block" aria-hidden="true">
+          <div
+            className="h-full w-full bg-cover bg-center"
+            style={{ backgroundImage: `url(${heroImg})` }}
+          />
         </div>
       </div>
-
-      {/* Columna derecha: imagen */}
-      <div className="hidden lg:block" aria-hidden="true">
-        <div
-          className="h-full w-full bg-cover bg-center"
-          style={{ backgroundImage: `url(${heroImg})` }}
-        />
-      </div>
-    </div>
+    </>
   );
 }

@@ -3,26 +3,95 @@ from uuid import uuid4
 from django.db import transaction
 from django.db.models import Q, Count
 from django.utils import timezone
+from datetime import time
 
 from citas.models import (
     Cita,
-    ESTADO_CANCELADA,
     ESTADO_MANTENIMIENTO,
     ESTADO_PENDIENTE,
 )
 
 
 def _qFuturas(dtFrom):
-    """
-    Devuelve un Q que filtra citas con (fecha/hora) >= dtFrom.
-    """
+    # Devuelve un Q que filtra citas con (fecha/hora) >= dtFrom.
     return Q(fecha__gt=dtFrom.date()) | Q(fecha=dtFrom.date(), hora__gte=dtFrom.time())
 
+def previewCambioHorarioOdontologo(idOdontologo: int, nuevosHorarios: list[dict], dtFrom=None):
+    """
+    Detecta citas FUTURAS (>= dtFrom) que quedarían FUERA del nuevo horario
+    del odontólogo o en días deshabilitados
+    """
+    if dtFrom is None:
+        dtFrom = timezone.now()
+
+    # Citas futuras (pendientes o confirmadas)
+    qs = (
+        Cita.objects.filter(id_odontologo_id=idOdontologo)
+        .filter(_qFuturas(dtFrom))
+        .filter(estado__in=[ESTADO_PENDIENTE, "confirmada"])
+    )
+
+    afectadas = []
+
+    for cita in qs:
+        dia_semana = cita.fecha.weekday()  # lunes=0 ... domingo=6
+        # Busca si ese día está habilitado
+        horario = next(
+            (
+                h for h in nuevosHorarios
+                if int(h.get("dia_semana", -1)) == dia_semana
+                and h.get("habilitado", h.get("vigente", True))
+            ),
+            None
+        )
+
+        if not horario:
+            # Día deshabilitado completamente
+            afectadas.append(cita)
+            continue
+
+        # Convertir a objetos time para comparar
+        try:
+            hora_ini = time.fromisoformat(str(horario["hora_inicio"]))
+            hora_fin = time.fromisoformat(str(horario["hora_fin"]))
+        except Exception:
+            continue  # horario inválido, saltar
+
+        if not (hora_ini <= cita.hora <= hora_fin):
+            # Cita fuera del rango permitido
+            afectadas.append(cita)
+
+    items = list(
+        {
+            "id_cita": c.id_cita,
+            "fecha": c.fecha,
+            "hora": str(c.hora),
+            "estado": c.estado,
+            "paciente_nombre": " ".join(
+                filter(
+                    None,
+                    [
+                        getattr(c.id_paciente.id_usuario, "primer_nombre", ""),
+                        getattr(c.id_paciente.id_usuario, "segundo_nombre", ""),
+                        getattr(c.id_paciente.id_usuario, "primer_apellido", ""),
+                        getattr(c.id_paciente.id_usuario, "segundo_apellido", ""),
+                    ],
+                )
+            ).strip(),
+        }
+        for c in afectadas
+    )
+
+    return {
+        "total_afectadas": len(items),
+        "items": items,
+    }
 
 def previewMantenimientoOdontologo(idOdontologo: int, dtFrom=None):
     """
     Previsualiza cuántas citas FUTURAS (>= dtFrom) serán afectadas
-    al desactivar un odontólogo. Excluye las ya canceladas.
+    al desactivar un odontólogo. Solo incluye citas pendientes y confirmadas
+    las realizadas, canceladas o en mantenimiento NO se afectan
     """
     if dtFrom is None:
         dtFrom = timezone.now()
@@ -30,7 +99,7 @@ def previewMantenimientoOdontologo(idOdontologo: int, dtFrom=None):
     qs = (
         Cita.objects.filter(id_odontologo_id=idOdontologo)
         .filter(_qFuturas(dtFrom))
-        .exclude(estado=ESTADO_CANCELADA)
+        .filter(estado__in=[ESTADO_PENDIENTE, "confirmada"])  # Solo pendientes y confirmadas
     )
 
     total = qs.count()
@@ -80,7 +149,8 @@ def previewMantenimientoOdontologo(idOdontologo: int, dtFrom=None):
 def applyMantenimientoOdontologo(idOdontologo: int, byRoleId: int, dtFrom=None):
     """
     Marca como 'mantenimiento' todas las citas FUTURAS de ese odontólogo
-    (excluyendo canceladas). Setea huellas y devuelve batch + listado.
+    que estén en estado pendiente o confirmada. 
+    Las citas realizadas, canceladas o ya en mantenimiento NO se modifican.
     """
     if dtFrom is None:
         dtFrom = timezone.now()
@@ -89,7 +159,7 @@ def applyMantenimientoOdontologo(idOdontologo: int, byRoleId: int, dtFrom=None):
         Cita.objects.select_for_update()
         .filter(id_odontologo_id=idOdontologo)
         .filter(_qFuturas(dtFrom))
-        .exclude(estado=ESTADO_CANCELADA)
+        .filter(estado__in=[ESTADO_PENDIENTE, "confirmada"])  # Solo pendientes y confirmadas
     )
 
     batch = uuid4()

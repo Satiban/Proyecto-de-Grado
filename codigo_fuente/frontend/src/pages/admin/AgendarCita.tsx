@@ -17,10 +17,14 @@ import {
 
 /* ==================== Tipos ==================== */
 type Opcion = { id: number; nombre: string };
-type OdontologoOpt = Opcion & { especialidades?: string[] };
+type OdontologoOpt = Opcion & { 
+  id_usuario?: number | null;
+  especialidades?: string[];
+};
 
 type PacienteFlat = {
   id_paciente: number;
+  id_usuario: number;
   cedula: string;
   primer_nombre?: string | null;
   segundo_nombre?: string | null;
@@ -439,6 +443,7 @@ export default function AgendarCita() {
   const [motivo, setMotivo] = useState<string>("");
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
+  const [showSuccess, setShowSuccess] = useState(false);
 
   /* ------- utils de actividad ------- */
   const isActiveFlag = (v: any) =>
@@ -485,6 +490,7 @@ export default function AgendarCita() {
 
         planos.push({
           id_paciente: Number(id_paciente),
+          id_usuario: Number(idUsuario),
           cedula: String(p.cedula ?? uDet?.cedula ?? p.usuario_cedula ?? ""),
           primer_nombre: p.primer_nombre ?? uDet?.primer_nombre ?? "",
           segundo_nombre: p.segundo_nombre ?? uDet?.segundo_nombre ?? "",
@@ -575,23 +581,24 @@ export default function AgendarCita() {
         api.get("/consultorios/?page_size=1000"),
       ]);
 
-      // Solo odontólogos activos
+      // Solo odontólogos activos (ambos campos: odontologo_activo Y is_active)
       const odList: OdontologoOpt[] = (od.data.results ?? od.data)
         .filter((o: any) => {
-          const activoOdo =
-            isActiveFlag(o.activo) &&
-            isActiveFlag(o.estado) &&
-            // si el serializer anida usuario o expone su estado:
-            isActiveFlag(
-              o.usuario_activo ??
-                o.user_activo ??
-                o.is_active ?? // a veces exponen directo
-                true
-            );
-          return activoOdo;
+          // Usar odontologo_activo como campo principal, con fallback a activo
+          const odontActivo = o.odontologo_activo !== undefined 
+            ? isActiveFlag(o.odontologo_activo)
+            : isActiveFlag(o.activo);
+          
+          // Verificar que el usuario general también esté activo
+          const usuarioActivo = isActiveFlag(
+            o.is_active ?? o.usuario_activo ?? o.user_activo ?? true
+          );
+          
+          return odontActivo && usuarioActivo;
         })
         .map((o: any) => ({
           id: o.id_odontologo,
+          id_usuario: o.id_usuario ?? o.usuario?.id_usuario ?? o.usuario_id ?? null,
           nombre:
             o.nombreCompleto ??
             [
@@ -629,12 +636,27 @@ export default function AgendarCita() {
         const r = await api.get(`/odontologos/${odo}/`);
         const o = r.data;
 
+        // Validar que el odontólogo no sea el mismo paciente
+        if (pacSel?.id) {
+          const pacienteSeleccionado = pacientes.find(p => p.id_paciente === pacSel.id);
+          const odoUsuarioId = o.id_usuario ?? o.usuario?.id_usuario ?? o.usuario_id;
+          
+          if (pacienteSeleccionado?.id_usuario && odoUsuarioId && 
+              pacienteSeleccionado.id_usuario === odoUsuarioId) {
+            setErrorMsg("No puedes agendar una cita contigo mismo.");
+            setOdoInfo(null);
+            setOdo("");
+            return;
+          }
+        }
+
         // Si el odontólogo viene inactivo por alguna razón, limpiamos selección
-        const activoOdo =
-          isActiveFlag(o.activo) &&
-          isActiveFlag(o.estado) &&
-          isActiveFlag(o.usuario_activo ?? o.is_active ?? true);
-        if (!activoOdo) {
+        const odontActivo = o.odontologo_activo !== undefined
+          ? isActiveFlag(o.odontologo_activo)
+          : isActiveFlag(o.activo);
+        const usuarioActivo = isActiveFlag(o.is_active ?? o.usuario_activo ?? true);
+        
+        if (!odontActivo || !usuarioActivo) {
           setOdoInfo(null);
           setOdo("");
           return;
@@ -664,7 +686,7 @@ export default function AgendarCita() {
         setOdoInfo(null);
       }
     })();
-  }, [odo]);
+  }, [odo, pacSel, pacientes]);
 
   /* ------- Helpers bloqueos ------- */
   function expandRange(from: string, to: string): string[] {
@@ -976,7 +998,12 @@ export default function AgendarCita() {
         estado: "pendiente",
       };
       await api.post("/citas/", payload);
-      navigate("/admin/agenda");
+      setShowSuccess(true);
+      setTimeout(() => {
+        navigate("/admin/agenda", {
+          state: { fechaNueva: fecha },
+        });
+      }, 1000);
     } catch (err: any) {
       const data = err?.response?.data;
       const msg =
@@ -997,6 +1024,15 @@ export default function AgendarCita() {
   /* ==================== UI ==================== */
   return (
     <div className="space-y-6">
+      {/* Toast éxito */}
+      {showSuccess && (
+        <div className="fixed top-4 right-4 z-50 animate-in fade-in zoom-in duration-200">
+          <div className="rounded-xl bg-green-600 text-white shadow-lg px-4 py-3">
+            <div className="font-semibold">¡Cita creada correctamente!</div>
+            <div className="text-sm text-white/90">Redirigiendo…</div>
+          </div>
+        </div>
+      )}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <h1 className="text-2xl font-bold flex items-center gap-2">
           <CalendarPlus className="w-6 h-6" />
@@ -1252,7 +1288,7 @@ export default function AgendarCita() {
           <div className="grid gap-2">
             <label className="text-sm font-medium">Odontólogo</label>
             <select
-              className="border rounded-lg px-3 py-2 bg-white"
+              className="border rounded-lg px-3 py-2 bg-white w-full max-w-full overflow-hidden text-ellipsis"
               value={odo}
               onChange={(e) => {
                 setOdo(e.target.value ? Number(e.target.value) : "");
@@ -1261,14 +1297,27 @@ export default function AgendarCita() {
               }}
             >
               <option value="">Selecciona un odontólogo…</option>
-              {odontologos.map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.nombre}
-                  {o.especialidades?.length
-                    ? ` — ${o.especialidades.join(", ")}`
-                    : ""}
-                </option>
-              ))}
+              {odontologos.map((o) => {
+                // Detectar si este odontólogo es el mismo paciente seleccionado
+                const pacienteSeleccionado = pacSel?.id ? pacientes.find(p => p.id_paciente === pacSel.id) : null;
+                const esMismoPaciente = !!(pacienteSeleccionado?.id_usuario && 
+                  o.id_usuario === pacienteSeleccionado.id_usuario);
+                
+                return (
+                  <option 
+                    key={o.id} 
+                    value={o.id}
+                    disabled={esMismoPaciente}
+                    style={esMismoPaciente ? { color: '#9CA3AF' } : undefined}
+                  >
+                    {o.nombre}
+                    {o.especialidades?.length
+                      ? ` — ${o.especialidades.join(", ")}`
+                      : ""}
+                    {esMismoPaciente ? " (No disponible - Es el mismo paciente)" : ""}
+                  </option>
+                );
+              })}
             </select>
             {odoInfo?.especialidad && (
               <div className="text-xs text-gray-600">
@@ -1277,6 +1326,20 @@ export default function AgendarCita() {
             )}
             <div className="text-xs text-gray-600">
               * Solo se listan odontólogos activos.
+              {pacSel?.id && (() => {
+                const pacienteSeleccionado = pacientes.find(p => p.id_paciente === pacSel.id);
+                const esOdontologo = pacienteSeleccionado?.id_usuario && 
+                  odontologos.some(o => o.id_usuario === pacienteSeleccionado.id_usuario);
+                
+                if (esOdontologo) {
+                  return (
+                    <span className="block text-amber-600 mt-1">
+                      ⚠️ El paciente seleccionado también es odontólogo (aparece deshabilitado en la lista).
+                    </span>
+                  );
+                }
+                return null;
+              })()}
             </div>
           </div>
 
@@ -1321,7 +1384,7 @@ export default function AgendarCita() {
           <div className="grid gap-2">
             <label className="text-sm font-medium">Consultorio</label>
             <select
-              className="border rounded-lg px-3 py-2 bg-white"
+              className="border rounded-lg px-3 py-2 bg-white w-full max-w-full overflow-hidden text-ellipsis"
               value={consultorio === "" ? "" : String(consultorio)}
               onChange={(e) =>
                 setConsultorio(e.target.value ? Number(e.target.value) : "")

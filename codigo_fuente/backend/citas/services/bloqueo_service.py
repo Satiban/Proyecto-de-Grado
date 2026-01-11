@@ -21,11 +21,10 @@ from citas.models import (
 def _q_futuras(dt_from):
     """
     Q para seleccionar citas FUTURAS respecto a dt_from (aware):
-      - fecha > dt_from.date()
-      - o misma fecha y hora >= dt_from.time()
+        - fecha > dt_from.date()
+        - o misma fecha y hora >= dt_from.time()
     """
     return Q(fecha__gt=dt_from.date()) | Q(fecha=dt_from.date(), hora__gte=dt_from.time())
-
 
 def _days_in_mmdd_range(start: _date, end: _date) -> Iterable[tuple[int, int]]:
     """
@@ -59,14 +58,14 @@ def _q_rango_fechas(fi: _date, ff: _date, recurrente_anual: bool) -> Q:
     """
     Selección por fecha:
       - No recurrente: fecha in [fi..ff]
-      - Recurrente anual: (fecha__month, fecha__day) ∈ rango MM-DD
+      - Recurrente anual: (fecha__month, fecha__day) en rango MM-DD
     """
     if not recurrente_anual:
         return Q(fecha__range=[fi, ff])
 
     # Recurrente anual por MM-DD
     pairs = _days_in_mmdd_range(fi, ff)
-    q = Q(pk__in=[])  # Q vacío (false) para ir "acumulando" OR
+    q = Q(pk__in=[])
     for m, d in pairs:
         q |= Q(fecha__month=m, fecha__day=d)
     return q
@@ -84,7 +83,7 @@ def _qs_base_bloqueo(
       - Solo FUTURAS (>= dt_from)
       - En rango (normal o recurrente por MM-DD)
       - Si id_odontologo se especifica, filtra por ese odontólogo; si no, aplica global
-      - Excluye explícitamente CANCELADAS (pero NO excluye mantenimiento para permitir reactivación)
+      - Excluye explícitamente CANCELADAS
     """
     q = _q_rango_fechas(fi, ff, recurrente_anual) & _q_futuras(dt_from)
     qs = Cita.objects.filter(q).exclude(estado=ESTADO_CANCELADA)
@@ -137,6 +136,48 @@ def previewMantenimientoBloqueo(
     }
 
 
+def previewReactivacionBloqueo(
+    fecha_inicio: _date,
+    fecha_fin: _date,
+    id_odontologo: Optional[int] = None,
+    recurrente_anual: bool = False,
+    dtFrom=None,
+):
+    """
+    PREVIEW: lista las citas FUTURAS en estado "MANTENIMIENTO" que volverían
+    a "PENDIENTE" al reactivar un bloqueo en el rango indicado.
+    """
+    if dtFrom is None:
+        dtFrom = timezone.now()
+
+    base = _qs_base_bloqueo(
+        fecha_inicio, fecha_fin, id_odontologo, recurrente_anual, dtFrom
+    )
+    qs = base.filter(estado=ESTADO_MANTENIMIENTO)
+
+    total = qs.count()
+    porEstado = {ESTADO_MANTENIMIENTO: total} if total else {}
+
+    items = list(
+        qs.values(
+            "id_cita",
+            "fecha",
+            "hora",
+            "id_paciente__id_usuario__primer_nombre",
+            "id_paciente__id_usuario__primer_apellido",
+            "id_paciente__id_usuario__celular",
+            "id_odontologo__id_usuario__primer_nombre",
+            "id_odontologo__id_usuario__primer_apellido",
+        ).order_by("fecha", "hora", "id_cita")
+    )
+
+    return {
+        "total_afectadas": total,
+        "por_estado": porEstado,
+        "items": items,
+    }
+
+
 @transaction.atomic
 def applyMantenimientoBloqueo(
     fecha_inicio: _date,
@@ -147,10 +188,9 @@ def applyMantenimientoBloqueo(
     dtFrom=None,
 ):
     """
-    APLICA: marca como 'MANTENIMIENTO' todas las citas FUTURAS afectadas por el bloqueo
+    Marca como 'MANTENIMIENTO' todas las citas FUTURAS afectadas por el bloqueo
     (global o por odontólogo) en [fecha_inicio..fecha_fin] que estén en
-    PENDIENTE o CONFIRMADA. No toca canceladas ni otros estados.
-    Devuelve batch + listado (para CSV).
+    PENDIENTE o CONFIRMADA. No toca canceladas ni otros estados
     """
     if dtFrom is None:
         dtFrom = timezone.now()
@@ -175,7 +215,6 @@ def applyMantenimientoBloqueo(
         ).order_by("fecha", "hora", "id_cita")
     )
 
-    # Campos opcionales según tu schema
     model_fields = {f.name for f in Cita._meta.get_fields()}
     update_kwargs = {"estado": ESTADO_MANTENIMIENTO}
     if "reprogramada_en" in model_fields:
@@ -185,7 +224,6 @@ def applyMantenimientoBloqueo(
     if "batch_id" in model_fields:
         update_kwargs["batch_id"] = batch
 
-    # 🔥 Bulk update: evita save()/clean() y por tanto la validación "El día está bloqueado"
     updated = qs.update(**update_kwargs)
 
     return {
@@ -212,8 +250,23 @@ def applyReactivacionBloqueo(
 
     base = _qs_base_bloqueo(fecha_inicio, fecha_fin, id_odontologo, recurrente_anual, dtFrom)
     qs = base.filter(estado=ESTADO_MANTENIMIENTO).select_for_update()
+    
+    items = list(
+        qs.values(
+            "id_cita",
+            "fecha",
+            "hora",
+            "id_paciente__id_usuario__primer_nombre",
+            "id_paciente__id_usuario__primer_apellido",
+            "id_paciente__id_usuario__celular",
+            "id_odontologo__id_usuario__primer_nombre",
+            "id_odontologo__id_usuario__primer_apellido",
+        ).order_by("fecha", "hora", "id_cita")
+    )
+
     changed = qs.update(estado=ESTADO_PENDIENTE)
 
     return {
-        "total_pendientes": changed
+        "total_pendientes": changed,
+        "items": items,
     }

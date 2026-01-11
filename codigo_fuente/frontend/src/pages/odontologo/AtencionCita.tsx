@@ -3,7 +3,6 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../../api/axios";
 import {
-  ArrowLeft,
   CalendarDays,
   Clock,
   FileText,
@@ -114,7 +113,7 @@ const fmtHora = (hhmm?: string | null, fallback?: string | null) => {
 const KB = 1024;
 const MB = 1024 * KB;
 const MAX_SIZE = 10 * MB;
-const ALLOWED_EXT = new Set(["pdf", "jpg", "jpeg", "png", "webp"]);
+const ALLOWED_EXT = new Set(["pdf", "jpg", "jpeg", "png", "webp", "zip", "rar"]);
 
 /* ====================== Componente ====================== */
 
@@ -145,6 +144,35 @@ const AtencionCita: React.FC = () => {
 
   const inputRef = useRef<HTMLInputElement | null>(null);
 
+  const [showModal, setShowModal] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+
+  const marcarAusentismo = async () => {
+    setConfirming(true);
+    setErrors(null);
+    try {
+      await api.patch(`/citas/${idCita}/`, {
+        estado: "cancelada",
+        cancelada_por_rol: 3,
+        ausentismo: true,
+        cancelada_en: new Date().toISOString(),
+      });
+
+      setShowModal(false);
+      setShowToast(true);
+      setTimeout(() => {
+        setShowToast(false);
+        navigate(`/odontologo/citas/${idCita}/ver`, { replace: true });
+      }, 1200);
+    } catch (err: any) {
+      const msg =
+        err?.response?.data?.detail ||
+        "No se pudo marcar la cita como ausentismo.";
+      setErrors(msg);
+    } finally {
+      setConfirming(false);
+    }
+  };
   const requiredFilled =
     form.observacion.trim().length > 0 &&
     form.diagnostico.trim().length > 0 &&
@@ -238,28 +266,18 @@ const AtencionCita: React.FC = () => {
           setAdjuntos(listAdj);
         }
 
-        // 5) Antecedentes (principal y fallback)
+        // 5) Antecedentes
         if (c?.id_paciente) {
           try {
-            // Principal: tu ViewSet dedicado
-            const a1 = await api.get<
+            const resp = await api.get<
               { results?: AntecedentePaciente[] } | AntecedentePaciente[]
             >(`/paciente-antecedentes/?id_paciente=${c.id_paciente}`);
-            const ants1 = Array.isArray(a1.data)
-              ? a1.data
-              : a1.data.results ?? [];
-
-            let final = ants1;
-            if (!final.length) {
-              // Fallback por si el router es diferente
-              const a2 = await api.get<
-                { results?: AntecedentePaciente[] } | AntecedentePaciente[]
-              >(`/antecedentes/pacientes/?id_paciente=${c.id_paciente}`);
-              final = Array.isArray(a2.data) ? a2.data : a2.data.results ?? [];
-            }
+            const ants = Array.isArray(resp.data)
+              ? resp.data
+              : resp.data.results ?? [];
 
             // Normalizar
-            setAntecedentes(final.map(normalizeAntecedente));
+            setAntecedentes(ants.map(normalizeAntecedente));
           } catch {
             setAntecedentes([]);
           }
@@ -314,7 +332,7 @@ const AtencionCita: React.FC = () => {
         `/fichas-medicas/${ficha.id_ficha_medica}/`,
         payload
       );
-      await api.patch(`/citas/${idCita}/`, { estado: estadoCita });
+      await api.patch(`/citas/${idCita}/`, { estado: "realizada" });
 
       setShowToast(true);
       setTimeout(() => {
@@ -338,7 +356,7 @@ const AtencionCita: React.FC = () => {
     if (!sizeOk) return `“${file.name}” supera 10MB.`;
     const ext = (file.name.split(".").pop() || "").toLowerCase();
     if (!ALLOWED_EXT.has(ext)) {
-      return `“${file.name}” tiene extensión no permitida. Usa pdf/jpg/jpeg/png/webp.`;
+      return `“${file.name}” tiene extensión no permitida. Usa pdf/jpg/jpeg/png/webp/zip/rar.`;
     }
     return null;
   };
@@ -365,7 +383,7 @@ const AtencionCita: React.FC = () => {
       for (const f of lote) {
         const formData = new FormData();
         formData.append("id_ficha_medica", String(ficha.id_ficha_medica));
-        formData.append("archivo", f);
+        formData.append("archivo_file", f);
         const resp = await api.post<ArchivoAdjunto>(
           `/archivos-adjuntos/`,
           formData,
@@ -378,7 +396,7 @@ const AtencionCita: React.FC = () => {
       setAdjuntos((prev) => [...nuevos, ...prev]);
     } catch (err: any) {
       const backendErr =
-        err?.response?.data?.archivo?.[0] ||
+        err?.response?.data?.archivo_file?.[0] ||
         err?.response?.data?.detail ||
         "Error subiendo adjuntos.";
       setErrors(String(backendErr));
@@ -448,8 +466,7 @@ const AtencionCita: React.FC = () => {
             onClick={() => navigate(-1)}
             className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-white shadow hover:bg-slate-50"
           >
-            <ArrowLeft className="w-4 h-4" />
-            Volver
+            Cancelar
           </button>
         </div>
       </div>
@@ -483,8 +500,16 @@ const AtencionCita: React.FC = () => {
               className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-white shadow hover:bg-slate-50"
               title="Volver"
             >
-              <ArrowLeft className="w-4 h-4" />
-              Volver
+              Cancelar
+            </button>
+
+            <button
+              onClick={() => setShowModal(true)}
+              className="inline-flex items-center gap-2 border rounded-lg bg-rose-600 text-white px-4 py-2 shadow hover:bg-rose-700 disabled:opacity-50"
+              title="Marcar como ausentismo"
+            >
+              <AlertTriangle className="w-4 h-4" />
+              Ausentismo
             </button>
 
             <button
@@ -518,9 +543,29 @@ const AtencionCita: React.FC = () => {
         {/* Card: datos de la cita / paciente */}
         <section className="grid grid-cols-1 xl:grid-cols-3 gap-6">
           <div className="xl:col-span-2 rounded-2xl bg-white p-5 shadow-md">
-            <div className="flex items-center gap-3 mb-4">
-              <User className="w-5 h-5 text-slate-600" />
-              <h2 className="text-lg font-semibold">Paciente</h2>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <User className="w-5 h-5 text-slate-600" />
+                <h2 className="text-lg font-semibold">Paciente</h2>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span
+                  className={`px-2 py-1 rounded-full text-xs font-medium ${
+                    estadoCita === "confirmada"
+                      ? "bg-emerald-100 text-emerald-700 border border-emerald-200"
+                      : estadoCita === "realizada"
+                      ? "bg-blue-100 text-blue-700 border border-blue-200"
+                      : estadoCita === "cancelada"
+                      ? "bg-rose-100 text-rose-700 border border-rose-200"
+                      : estadoCita === "mantenimiento"
+                      ? "bg-purple-100 text-purple-800 border border-purple-200"
+                      : "bg-amber-100 text-amber-700 border border-amber-200"
+                  }`}
+                >
+                  {estadoCita.charAt(0).toUpperCase() + estadoCita.slice(1)}
+                </span>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-2 text-sm">
@@ -551,21 +596,6 @@ const AtencionCita: React.FC = () => {
                 <FileText className="w-4 h-4 text-slate-600" />
                 <span className="text-slate-500">Motivo:</span>
                 <span className="font-medium">{cita.motivo || "—"}</span>
-              </div>
-              <div className="inline-flex items-center gap-2">
-                <FileText className="w-4 h-4 text-slate-600" />
-                <span className="text-slate-500">Estado:</span>
-                <select
-                  value={estadoCita}
-                  onChange={(e) => setEstadoCita(e.target.value as Estado)}
-                  className="ml-2 rounded-lg border px-2 py-1 text-sm"
-                >
-                  <option value="pendiente">Pendiente</option>
-                  <option value="confirmada">Confirmada</option>
-                  <option value="realizada">Realizada</option>
-                  <option value="cancelada">Cancelada</option>
-                  <option value="mantenimiento">Mantenimiento</option>
-                </select>
               </div>
             </div>
           </div>
@@ -712,7 +742,7 @@ const AtencionCita: React.FC = () => {
                 ref={inputRef}
                 type="file"
                 multiple
-                accept=".pdf,.jpg,.jpeg,.png,.webp"
+                accept=".pdf,.jpg,.jpeg,.png,.webp,.zip,.rar"
                 className="hidden"
                 onChange={(e) => subirAdjuntos(e.target.files)}
               />
@@ -764,6 +794,41 @@ const AtencionCita: React.FC = () => {
           </div>
         </section>
       </div>
+      {showModal && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-lg animate-in fade-in duration-150">
+            <h2 className="text-lg font-semibold mb-2 flex items-center gap-2 text-rose-600">
+              <AlertTriangle className="w-5 h-5" />
+              Confirmar Ausentismo
+            </h2>
+            <p className="text-sm text-slate-600 mb-4">
+              Esta cita se marcará como <b>cancelada</b> y con{" "}
+              <b>ausentismo confirmado</b>, por lo que se aplicará una
+              penalización al paciente. ¿Desea continuar?
+            </p>
+
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setShowModal(false)}
+                disabled={confirming}
+                className="px-4 py-2 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={marcarAusentismo}
+                disabled={confirming}
+                className="px-4 py-2 rounded-md bg-rose-600 text-white hover:bg-rose-700 shadow disabled:opacity-50"
+              >
+                {confirming ? (
+                  <Loader2 className="w-4 h-4 animate-spin inline mr-2" />
+                ) : null}
+                Confirmar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 };

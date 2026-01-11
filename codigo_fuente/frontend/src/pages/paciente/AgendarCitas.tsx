@@ -14,6 +14,7 @@ import {
   CalendarPlus,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
+import { useConfig } from "../../hooks/useConfig";
 
 /* ==================== Tipos ==================== */
 type Opcion = { id: number; nombre: string };
@@ -27,7 +28,7 @@ type OdontologoOpt = Opcion & {
 };
 
 type HorarioVigente = {
-  dia_semana: number; // 0=Lunes..6=Domingo (canónico)
+  dia_semana: number; // 0=Lunes..6=Domingo
   hora_inicio: string; // "HH:MM"
   hora_fin: string; // "HH:MM"
   vigente?: boolean;
@@ -89,16 +90,13 @@ type Cita = {
   cancelada_en?: string | null;
   cancelada_por_rol?: number | null;
   id_odontologo?: number;
+  ausentismo?: boolean | null;
 };
 
 /* ==================== Constantes / helpers ==================== */
-const LUNCH_FROM = 13; // 13:00
-const LUNCH_TO = 15; // 15:00 (exclusivo)
+const LUNCH_FROM = 13;
+const LUNCH_TO = 15;
 const MAX_MONTHS_AHEAD = 3;
-const COOLDOWN_DIAS = 7;
-const MAX_CITAS_SEMANA = 5;
-/* NUEVO: anticipación mínima (minutos) para el mismo día */
-const SAME_DAY_LEAD_MIN = 120;
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 const toISODate = (d: Date) =>
@@ -132,6 +130,7 @@ const isToday = (iso: string) => {
     a.getDate() === b.getDate()
   );
 };
+
 /** 0=Lunes..6=Domingo para una fecha ISO */
 const dowMonday0 = (iso: string) => (fromISO(iso).getDay() + 6) % 7;
 
@@ -202,8 +201,10 @@ const toDDMMYYYY_dash = (iso: string) => {
    Página PACIENTE: Agendar Cita
    ======================================================= */
 export default function AgendarCita() {
+  const { config } = useConfig();
   const navigate = useNavigate();
   const { usuario } = useAuth() as any;
+  const [diasPenalizacion, setDiasPenalizacion] = useState<number>(0);
 
   /* ------- paciente id (del logueado) ------- */
   const [pacienteId, setPacienteId] = useState<number | null>(null);
@@ -266,12 +267,22 @@ export default function AgendarCita() {
           api.get("/consultorios/?page_size=1000"),
         ]);
 
+        const idUsuarioActual = usuario?.id_usuario ?? usuario?.id ?? null;
         const odList: OdontologoOpt[] = (od.data.results ?? od.data)
           .filter((o: any) => {
-            const ok =
-              !(o.activo === false || o.estado === false) &&
-              !(o.usuario_activo === false || o.is_active === false);
-            return ok;
+            // excluir al propio usuario si es odontólogo
+            if (o.id_usuario === idUsuarioActual) return false;
+
+            const odontActivo =
+              o.odontologo_activo !== undefined
+                ? o.odontologo_activo !== false
+                : o.activo !== false;
+
+            const usuarioActivo = !(
+              o.is_active === false || o.usuario_activo === false
+            );
+
+            return odontActivo && usuarioActivo;
           })
           .map((o: any) => ({
             id: Number(o.id_odontologo),
@@ -331,12 +342,34 @@ export default function AgendarCita() {
   const listaFiltrada = useMemo(() => {
     const nom = fNombre.trim().toLowerCase();
     const esp = fEsp.trim().toLowerCase();
-    return odontologos.filter((o) => {
+
+    const filtrados = odontologos.filter((o) => {
       const okNom = !nom || o.nombre.toLowerCase().includes(nom);
       const okEsp =
         !esp ||
         (o.especialidades ?? []).some((e) => e.toLowerCase().includes(esp));
       return okNom && okEsp;
+    });
+
+    return filtrados.sort((a, b) => {
+      // separar en nombres/apellidos
+      const aParts = a.nombre.split(" ");
+      const bParts = b.nombre.split(" ");
+
+      // último y penúltimo elemento = apellidos
+      const aApellidos = aParts.slice(-2).join(" ").toLowerCase();
+      const bApellidos = bParts.slice(-2).join(" ").toLowerCase();
+
+      if (aApellidos !== bApellidos) {
+        return aApellidos.localeCompare(bApellidos, "es", {
+          sensitivity: "base",
+        });
+      }
+
+      const aNombres = aParts.slice(0, -2).join(" ").toLowerCase();
+      const bNombres = bParts.slice(0, -2).join(" ").toLowerCase();
+
+      return aNombres.localeCompare(bNombres, "es", { sensitivity: "base" });
     });
   }, [odontologos, fNombre, fEsp]);
 
@@ -391,15 +424,6 @@ export default function AgendarCita() {
       null
     );
   }, [odoDet]);
-
-  const consultorioDefaultLabel = useMemo(() => {
-    if (!consultorioDefaultId) return null;
-    const c = consultorios.find((x) => x.id === consultorioDefaultId);
-    if (!c) return `Consultorio ${consultorioDefaultId}`;
-    return (
-      c.nombre ?? (c.numero ? `Consultorio ${c.numero}` : `Consultorio ${c.id}`)
-    );
-  }, [consultorioDefaultId, consultorios]);
 
   const detOrdenadas = useMemo(() => {
     const base = Array.isArray(odoDet?.especialidades_detalle)
@@ -538,7 +562,12 @@ export default function AgendarCita() {
         const to = `${y}-${pad2(m)}-${pad2(lastDay)}`;
 
         const { data } = await api.get("/citas/", {
-          params: { start: from, end: to, page_size: 1000 },
+          params: {
+            start: from,
+            end: to,
+            mine: "1",
+            page_size: 1000,
+          },
         });
 
         const arr: Cita[] = (data?.results ?? data ?? []) as Cita[];
@@ -562,12 +591,13 @@ export default function AgendarCita() {
 
   /* ------- Reglas del backend aplicadas en UI ------- */
 
-  // Cooldown (últimos 7 días) con el mismo odontólogo
+  // Cooldown (últimos días) con el mismo odontólogo
   const [cooldownInfo, setCooldownInfo] = useState<{
     citaFecha: string; // fecha de la cita cancelada (agenda original)
     citaHora: string | null; // hora de la cita cancelada
     cancelDate: string; // día en que se canceló (cancelada_en)
-    until: string; // día desde el cual puede volver a agendar (cancelDate + 7)
+    until: string; // día desde el cual puede volver a agenda
+    ausentismo?: boolean;
   } | null>(null);
 
   // Ya tiene cita activa con ese odontólogo
@@ -580,26 +610,20 @@ export default function AgendarCita() {
       if (!pacienteId || !odoId) return;
 
       try {
-        // 1) Canceladas recientes por el paciente con ese odontólogo (últimos 7 días)
-        const cancelResp = await api.get("/citas/", {
+        // 1) Citas canceladas con ese odontólogo (paciente o ausentismo)
+        const { data } = await api.get("/citas/", {
           params: {
             estado: "cancelada",
             id_odontologo: odoId,
+            id_paciente: pacienteId,
             page_size: 1000,
           },
         });
-        const cancels: Cita[] = (cancelResp.data?.results ??
-          cancelResp.data ??
-          []) as Cita[];
+        const cancels: Cita[] = (data?.results ?? data ?? []) as Cita[];
 
-        const now = new Date();
-        const ms7d = 7 * 24 * 60 * 60 * 1000;
+        // Filtramos solo las que tengan cancelada_en (recientes)
         const mineRecent = cancels
-          .filter((c) => c.cancelada_por_rol === 2 && c.cancelada_en)
-          .filter(
-            (c) =>
-              now.getTime() - new Date(String(c.cancelada_en)).getTime() < ms7d
-          )
+          .filter((c) => c.cancelada_en)
           .sort(
             (a, b) =>
               new Date(String(b.cancelada_en)).getTime() -
@@ -608,33 +632,49 @@ export default function AgendarCita() {
 
         if (mineRecent.length > 0) {
           const last = mineRecent[0];
-
           const citaFecha = last.fecha?.slice(0, 10) || toISODate(new Date());
           const citaHora =
             (last.hora && last.hora.slice(0, 5)) ||
             (last as any).hora_inicio ||
             null;
-
           const cancelDateISO = new Date(String(last.cancelada_en))
             .toISOString()
             .slice(0, 10);
 
-          const until = addDaysISO(cancelDateISO, COOLDOWN_DIAS);
+          let dias = 0;
 
-          if (fromISO(until) > fromISO(toISODate(new Date()))) {
-            setCooldownInfo({
-              citaFecha,
-              citaHora,
-              cancelDate: cancelDateISO,
-              until,
-            });
+          if (last.ausentismo) {
+            dias = config?.cooldown_dias ?? 3;
+          } else if (last.cancelada_por_rol === 2) {
+            dias = config?.cooldown_dias ?? 3;
+          }
+
+          setDiasPenalizacion(dias);
+
+          if (dias > 0) {
+            const until = addDaysISO(cancelDateISO, dias);
+
+            if (fromISO(until) > fromISO(toISODate(new Date()))) {
+              setCooldownInfo({
+                citaFecha,
+                citaHora,
+                cancelDate: cancelDateISO,
+                until,
+                ausentismo: !!last.ausentismo,
+              });
+            }
           }
         }
 
         // 2) Cita activa con el mismo odontólogo
         const allWithOdoResp = await api.get("/citas/", {
-          params: { id_odontologo: odoId, page_size: 1000 },
+          params: {
+            id_odontologo: odoId,
+            id_paciente: pacienteId,
+            page_size: 1000,
+          },
         });
+
         const withOdoAll: Cita[] = (allWithOdoResp.data?.results ??
           allWithOdoResp.data ??
           []) as Cita[];
@@ -643,19 +683,41 @@ export default function AgendarCita() {
         );
         setTieneActivaConOdo(activa);
       } catch {
-        // si falla, la API igualmente validará server-side
+        // Si falla, el backend validará igual
       }
     })();
   }, [pacienteId, odoId]);
 
-  // Límite por día (1) y por semana (5) respecto a la fecha elegida
+  // Límite por día respecto a la fecha elegida (configurable)
   const [countDiaActivas, setCountDiaActivas] = useState<number>(0);
-  const [countSemanaActivas, setCountSemanaActivas] = useState<number>(0);
+
+  // Total de citas activas del paciente (pendiente + confirmada)
+  const [totalActivasPaciente, setTotalActivasPaciente] = useState<number>(0);
+
+  useEffect(() => {
+    if (!pacienteId) return;
+
+    (async () => {
+      try {
+        const { data } = await api.get("/citas/", {
+          params: {
+            estado__in: "pendiente,confirmada",
+            id_paciente: pacienteId,
+            page_size: 1000,
+          },
+        });
+
+        const arr = data?.results ?? data ?? [];
+        setTotalActivasPaciente(arr.length);
+      } catch {
+        setTotalActivasPaciente(0);
+      }
+    })();
+  }, [pacienteId]);
 
   useEffect(() => {
     (async () => {
       setCountDiaActivas(0);
-      setCountSemanaActivas(0);
       if (!pacienteId || !fecha) return;
 
       try {
@@ -677,17 +739,13 @@ export default function AgendarCita() {
           (c) => c.fecha?.slice(0, 10) === fecha && c.estado !== "cancelada"
         ).length;
         setCountDiaActivas(dayCount);
-
-        const weekCount = arr.filter((c) => c.estado !== "cancelada").length;
-        setCountSemanaActivas(weekCount);
       } catch {
         // si falla, los límites se aplican en backend de todas formas
       }
     })();
   }, [pacienteId, fecha]);
 
-  const dayLimitReached = countDiaActivas >= 1;
-  const weekLimitReached = countSemanaActivas >= MAX_CITAS_SEMANA;
+  const dayLimitReached = !!(config && countDiaActivas >= config.max_citas_dia);
 
   // Bloqueo de la card 3 por odontólogo (cooldown o cita activa)
   const blockHoursForOdo = !!cooldownInfo || tieneActivaConOdo;
@@ -707,7 +765,6 @@ export default function AgendarCita() {
   >([]);
   const [loadingHoras, setLoadingHoras] = useState(false);
 
-  /* NUEVO: ticker para refrescar horarios cada minuto SOLO si la fecha seleccionada es hoy */
   const [nowTick, setNowTick] = useState<number>(0);
   useEffect(() => {
     if (!isToday(fecha)) return;
@@ -738,13 +795,15 @@ export default function AgendarCita() {
         }
       }
 
-      /* ======= NUEVO: si la fecha es hoy, aplicar lead time de 2 horas ======= */
+      // Aplicar tiempo mínimo de anticipación para el día de hoy
       if (isToday(dateISO)) {
         const now = new Date();
         const minutesNow = now.getHours() * 60 + now.getMinutes();
-        // cutoff = ahora + 120 minutos, redondeado hacia arriba al inicio de la siguiente hora
-        const cutoffAligned =
-          Math.ceil((minutesNow + SAME_DAY_LEAD_MIN) / 60) * 60;
+        const leadMinutes = config
+          ? (config.min_horas_anticipacion ?? 2) * 60
+          : 120;
+        const cutoffAligned = Math.ceil((minutesNow + leadMinutes) / 60) * 60;
+
         for (const s of Array.from(base)) {
           if (timeToMinutes(s) < cutoffAligned) base.delete(s);
         }
@@ -752,7 +811,7 @@ export default function AgendarCita() {
 
       return base;
     },
-    [horarios]
+    [horarios, config]
   );
 
   const fechaFueraDeRango = (iso: string) =>
@@ -781,8 +840,7 @@ export default function AgendarCita() {
         fechaFueraDeRango(fecha) ||
         fechaBloqueada(fecha) ||
         !fechaHabilitadaPorHorarios(fecha) ||
-        dayLimitReached ||
-        weekLimitReached
+        dayLimitReached
       ) {
         return;
       }
@@ -866,8 +924,7 @@ export default function AgendarCita() {
     consultorioDefaultId,
     blockHoursForOdo,
     dayLimitReached,
-    weekLimitReached,
-    nowTick, // NUEVO: fuerza recalcular horarios cada minuto si la fecha es hoy
+    nowTick, // fuerza recalcular horarios cada minuto si la fecha es hoy
   ]);
 
   /* ------- motivo & confirm modal ------- */
@@ -890,11 +947,14 @@ export default function AgendarCita() {
     }
   }, [fecha, horaSel]);
 
+  const maxActivasReached =
+    config && totalActivasPaciente >= config.max_citas_activas;
+
   // Botón "Confirmar" deshabilitado si se infringe cualquier regla
   const hardBlocked =
+    maxActivasReached ||
     !!(!!cooldownInfo || tieneActivaConOdo) ||
     dayLimitReached ||
-    weekLimitReached ||
     fechaFueraDeRango(fecha) ||
     fechaBloqueada(fecha) ||
     !fechaHabilitadaPorHorarios(fecha);
@@ -1141,7 +1201,16 @@ export default function AgendarCita() {
                             <Stethoscope className="w-5 h-5" />
                           </div>
                           <div className="text-left">
-                            <div className="font-medium">{o.nombre}</div>
+                            <div className="font-medium">
+                              {(() => {
+                                const parts = o.nombre.trim().split(/\s+/);
+                                const apellidos = parts.slice(-2).join(" ");
+                                const nombres = parts.slice(0, -2).join(" ");
+                                return [apellidos, nombres]
+                                  .filter(Boolean)
+                                  .join(" ");
+                              })()}
+                            </div>
                             <div className="text-sm text-gray-500 line-clamp-2">
                               {espLabel}
                             </div>
@@ -1158,12 +1227,30 @@ export default function AgendarCita() {
           {/* Avisos por odontólogo (cooldown / activa) */}
           {odoId && (
             <div className="mt-3 space-y-2">
+              {maxActivasReached && (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 flex gap-2">
+                  <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+                  <div>
+                    Ya tienes el máximo permitido de{" "}
+                    <b>{config?.max_citas_activas}</b> cita(s) activas. No
+                    puedes agendar otra hasta que una se complete o canceles una
+                    cita.
+                    <br />
+                    Para emergencias, comunícate al:{" "}
+                    <b>{config?.celular_contacto}</b>.
+                  </div>
+                </div>
+              )}
+
               {tieneActivaConOdo && (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 flex gap-2">
                   <Info className="w-4 h-4 mt-0.5 shrink-0" />
                   <div>
                     Ya tienes una cita activa (pendiente/confirmada) con este
                     odontólogo. No puedes crear otra.
+                    <br />
+                    Para información adicional comunícate al:
+                    <b> {config?.celular_contacto}</b>.
                   </div>
                 </div>
               )}
@@ -1177,10 +1264,31 @@ export default function AgendarCita() {
                       ? ` a las ${cooldownInfo.citaHora}`
                       : ""}{" "}
                     con este odontólogo el día{" "}
-                    <b>{toDDMMYYYY(cooldownInfo.cancelDate)}</b>. Podrás volver
-                    a agendar una cita con este odontólogo después de 7 días
-                    (desde el <b>{toDDMMYYYY(cooldownInfo.until)}</b>). Para
-                    emergencias, llama al consultorio.
+                    <b>{toDDMMYYYY(cooldownInfo.cancelDate)}</b>.{" "}
+                    {cooldownInfo.ausentismo ? (
+                      <>
+                        Debido a que no asististe a tu cita (ausentismo
+                        confirmado), podrás volver a agendar con este odontólogo
+                        después de{" "}
+                        <b>
+                          {diasPenalizacion}{" "}
+                          {diasPenalizacion === 1 ? "día" : "días"}
+                        </b>{" "}
+                        (desde el <b>{toDDMMYYYY(cooldownInfo.until)}</b>).
+                      </>
+                    ) : (
+                      <>
+                        Podrás volver a agendar una cita con este odontólogo
+                        después de{" "}
+                        <b>
+                          {diasPenalizacion}{" "}
+                          {diasPenalizacion === 1 ? "día" : "días"}
+                        </b>{" "}
+                        (desde el <b>{toDDMMYYYY(cooldownInfo.until)}</b>).
+                      </>
+                    )}{" "}
+                    Para emergencias, comunícate al:{" "}
+                    <b>{config?.celular_contacto}</b>.
                   </div>
                 </div>
               )}
@@ -1190,7 +1298,7 @@ export default function AgendarCita() {
 
         {/* Perfil */}
         <div className="rounded-xl bg-white shadow p-4">
-          <h2 className="text-sm font-semibold mb-3">Perfil</h2>
+          <h2 className="text-lg font-semibold mb-3">Perfil</h2>
           {!odoId ? (
             <div className="text-sm text-gray-500">
               Selecciona un odontólogo para ver su perfil.
@@ -1210,10 +1318,10 @@ export default function AgendarCita() {
                     <img
                       src={fotoURL}
                       alt={odoNombre}
-                      className="h-28 w-28 rounded-full object-cover border shadow-sm"
+                      className="h-55 w-55 rounded-full object-cover border-2 border-white shadow"
                     />
                   ) : (
-                    <div className="h-28 w-28 rounded-full bg-gray-200 flex items-center justify-center text-lg font-semibold">
+                    <div className="h-55 w-55 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center text-white text-3xl font-bold border-2 border-white shadow">
                       {initialsFromName(odoNombre)}
                     </div>
                   )}
@@ -1223,31 +1331,25 @@ export default function AgendarCita() {
                   {odoNombre || "Odontólogo"}
                 </div>
 
-                {consultorioDefaultLabel && (
-                  <div className="text-xs text-gray-600 -mt-1">
-                    Consultorio por defecto: <b>{consultorioDefaultLabel}</b>
-                  </div>
-                )}
-
                 <div className="md:text-left">
-                  <div className="text-sm font-medium mb-1">Especialidades</div>
+                  <div className="text-base font-medium mb-1">Especialidades</div>
                   <ul className="space-y-1">
                     {(odoDet.especialidades_detalle ?? []).length > 0 ? (
                       detOrdenadas.map((e, idx) => {
                         const nombreEsp = e?.nombre || "Odontología general";
                         const atiende = e?.estado !== false;
                         return (
-                          <li key={idx} className="text-sm text-gray-700">
+                          <li key={idx} className="text-base text-gray-700">
                             <div className="flex items-start justify-between gap-3">
                               <div className="flex-1">
                                 • {nombreEsp}
-                                <div className="text-xs text-gray-500 ml-4">
+                                <div className="text-sm text-gray-500 ml-4">
                                   {e?.universidad ? e.universidad : "—"}
                                 </div>
                               </div>
                               <span
                                 className={[
-                                  "shrink-0 px-2 py-0.5 rounded border text-[11px] mt-0.5",
+                                  "shrink-0 px-3 py-1 rounded border text-[15px] mt-0.5 font-semibold",
                                   atiende
                                     ? "bg-green-100 text-green-800 border-green-200"
                                     : "bg-gray-200 text-gray-700 border-gray-300",
@@ -1260,13 +1362,13 @@ export default function AgendarCita() {
                         );
                       })
                     ) : (
-                      <li className="text-sm text-gray-700">
+                      <li className="text-base text-gray-700">
                         <div className="flex items-start justify-between gap-3">
                           <div className="flex-1">
                             • Odontología general
-                            <div className="text-xs text-gray-500 ml-4">—</div>
+                            <div className="text-sm text-gray-500 ml-4">—</div>
                           </div>
-                          <span className="shrink-0 px-2 py-0.5 rounded border text-[11px] mt-0.5 bg-green-100 text-green-800 border-green-200">
+                          <span className="shrink-0 px-3 py-1 rounded border text-[15px] mt-0.5 font-semibold bg-green-100 text-green-800 border-green-200">
                             Atiende
                           </span>
                         </div>
@@ -1278,10 +1380,10 @@ export default function AgendarCita() {
 
               {/* DERECHA: horarios */}
               <div className="md:justify-self-end w-full md:pl-6 md:border-l md:border-gray-200">
-                <div className="text-sm font-medium mb-2">
+                <div className="text-lg font-medium mb-2">
                   Horarios de atención
                 </div>
-                <div className="text-sm text-gray-700">
+                <div className="text-base text-gray-700">
                   {(() => {
                     const dias = [
                       "Lun",
@@ -1528,45 +1630,29 @@ export default function AgendarCita() {
           <h2 className="font-semibold mb-3">3) Elige una hora</h2>
 
           {/* Si hay cooldown o cita activa con el odonto, no mostramos horarios */}
-          {blockHoursForOdo ? (
-            <div className="text-sm text-red-600">
-              {cooldownInfo ? (
-                <>
-                  Cancelaste una cita el{" "}
-                  <b>{toDDMMYYYY(cooldownInfo.citaFecha)}</b>
-                  {cooldownInfo.citaHora
-                    ? ` a las ${cooldownInfo.citaHora}`
-                    : ""}{" "}
-                  con este odontólogo el día{" "}
-                  <b>{toDDMMYYYY(cooldownInfo.cancelDate)}</b>.<br />
-                  Podrás volver a agendar una cita con este odontólogo después
-                  de 7 días (desde el <b>{toDDMMYYYY(cooldownInfo.until)}</b>).
-                  Si necesitas una cita de emergencia, llama al consultorio.
-                </>
-              ) : (
-                <>Ya tienes una cita activa con este odontólogo.</>
-              )}
-            </div>
-          ) : !odoId ? (
+          {!odoId ? (
             <div className="text-sm text-gray-500">
               Selecciona un odontólogo para ver horarios.
             </div>
           ) : fechaFueraDeRango(fecha) ? (
             <div className="text-sm text-red-600">
               La fecha está fuera del rango permitido (próximos 3 meses).
+              <br />
+              Si necesitas una cita especial, comunícate al:
+              <b> {config?.celular_contacto}</b>.
             </div>
           ) : fechaBloqueada(fecha) ? (
             <div className="text-sm text-red-600">
               El día seleccionado está bloqueado.
+              <br />
+              Para emergencias comunícate al: <b>{config?.celular_contacto}</b>.
             </div>
           ) : dayLimitReached ? (
             <div className="text-sm text-red-600">
-              Ya tienes una cita activa este día. Solo puedes agendar 1 por día.
-            </div>
-          ) : weekLimitReached ? (
-            <div className="text-sm text-red-600">
-              Alcanzaste el máximo de {MAX_CITAS_SEMANA} citas para esta semana
-              (Lun–Dom). Intenta en una semana diferente.
+              Ya alcanzaste el máximo de {config?.max_citas_dia ?? 1} cita(s)
+              activas para este día.
+              <br />
+              Para emergencias comunícate al: <b>{config?.celular_contacto}</b>.
             </div>
           ) : loadingHoras ? (
             <div className="text-sm text-gray-500">
@@ -1575,6 +1661,9 @@ export default function AgendarCita() {
           ) : horaOptions.length === 0 ? (
             <div className="text-sm text-red-600">
               No hay horarios disponibles para {fecha}.
+              <br />
+              Para consultas especiales comunícate al:
+              <b> {config?.celular_contacto}</b>.
             </div>
           ) : (
             <div className="flex flex-col gap-3">
@@ -1658,13 +1747,18 @@ export default function AgendarCita() {
                 ofrece un alterno.
               </div>
 
-              {/* Nota informativa de auto-confirmación si faltan < 24 h */}
-              {hoursUntil !== null && hoursUntil < 24 && hoursUntil > 0 && (
-                <div className="text-xs mt-1 rounded-md border border-green-200 bg-green-50 text-green-800 px-2 py-1">
-                  Esta cita se <b>confirmará automáticamente</b> al crearla
-                  porque faltan menos de 24 horas.
-                </div>
-              )}
+              {/* Nota informativa de auto-confirmación si faltan < horas_autoconfirmar */}
+              {config &&
+                typeof config.horas_autoconfirmar === "number" &&
+                hoursUntil !== null &&
+                hoursUntil < config.horas_autoconfirmar &&
+                hoursUntil > 0 && (
+                  <div className="text-xs mt-1 rounded-md border border-green-200 bg-green-50 text-green-800 px-2 py-1">
+                    Esta cita se <b>confirmará automáticamente</b> al crearla
+                    porque faltan menos de{" "}
+                    <b>{config.horas_autoconfirmar} horas</b>.
+                  </div>
+                )}
             </div>
           )}
 
@@ -1736,17 +1830,24 @@ export default function AgendarCita() {
               </div>
 
               {/* Aviso en el modal si será auto–confirmada */}
-              {hoursUntil !== null && hoursUntil < 24 && hoursUntil > 0 && (
-                <div className="mt-2 rounded-md border border-green-200 bg-green-50 text-green-800 px-2 py-1 text-xs">
-                  Esta cita se confirmará automáticamente al crearla (faltan
-                  menos de 24 h).
-                </div>
-              )}
+              {config &&
+                typeof config.horas_autoconfirmar === "number" &&
+                hoursUntil !== null &&
+                hoursUntil < config.horas_autoconfirmar &&
+                hoursUntil > 0 && (
+                  <div className="mt-2 rounded-md border border-green-200 bg-green-50 text-green-800 px-2 py-1 text-xs">
+                    Esta cita se confirmará automáticamente al crearla (faltan
+                    menos de {config.horas_autoconfirmar} horas).
+                  </div>
+                )}
             </div>
 
             {hardBlocked && (
               <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
                 No es posible confirmar por las restricciones vigentes.
+                <br />
+                Si necesitas ayuda, comunícate al:
+                <b> {config?.celular_contacto}</b>.
               </div>
             )}
 

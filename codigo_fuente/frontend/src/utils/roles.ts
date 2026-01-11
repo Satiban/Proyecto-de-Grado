@@ -29,8 +29,28 @@ export function rolId(rol: RolLite): number | null {
 }
 
 export function homeByRole(idRol?: number | null, isSuper?: boolean) {
-  if (isSuper || idRol === ROLES.ADMIN || idRol === ROLES.ADMIN_CLINICO) return "/admin";
+  // IMPORTANTE: El contexto activo solo se usa si el usuario tiene múltiples roles
+  // Para admins y otros roles únicos, SIEMPRE usar el rol principal
+  
+  // Admin y superuser SIEMPRE van a /admin (sin importar contexto)
+  if (isSuper || idRol === ROLES.ADMIN || idRol === ROLES.ADMIN_CLINICO) {
+    return "/admin";
+  }
+  
+  // Para roles que pueden tener contexto múltiple (paciente/odontólogo)
+  const contextoActivo = localStorage.getItem("contexto_activo");
+  
+  // Solo usar contexto si existe Y hay datos válidos
+  if (contextoActivo === "paciente" && localStorage.getItem("id_paciente")) {
+    return "/paciente";
+  }
+  if (contextoActivo === "odontologo" && localStorage.getItem("id_odontologo")) {
+    return "/odontologo";
+  }
+  
+  // Fallback al rol principal
   if (idRol === ROLES.ODONTOLOGO) return "/odontologo";
   if (idRol === ROLES.PACIENTE) return "/paciente";
+  
   return "/login";
 }

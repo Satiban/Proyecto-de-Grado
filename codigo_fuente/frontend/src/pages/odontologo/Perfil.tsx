@@ -28,7 +28,7 @@ type Odontologo = {
   primer_apellido?: string | null;
   segundo_apellido?: string | null;
   sexo?: string | null;
-  activo?: boolean;
+  is_active?: boolean;
   foto?: string | null;
   fecha_nacimiento?: string | null;
   tipo_sangre?: string | null;
@@ -254,7 +254,7 @@ export default function Perfil() {
 
   return (
     <div className="space-y-6">
-      {/* <-- sin padding, igual a Inicio.tsx */}
+      {/* sin padding, igual a Inicio.tsx */}
       {/* Header */}
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">👤 Mi perfil</h1>
@@ -301,7 +301,7 @@ export default function Perfil() {
                 )}
               </div>
 
-              {loading ? null : odo?.activo ? (
+              {loading ? null : odo?.is_active ? (
                 <span className="rounded bg-green-100 px-3 py-0.5 text-sm text-green-700">
                   Activo
                 </span>

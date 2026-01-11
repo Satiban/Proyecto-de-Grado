@@ -20,8 +20,8 @@ import {
 import { api } from "../../api/axios";
 
 /* ================== Endpoints (ajusta si difieren) ================== */
-const PATH_PACIENTES = "/pacientes/";               // lista/detalle; lista ya respeta rol paciente
-const PATH_PAC_ANT   = "/paciente-antecedentes/";   // para paciente autenticado, ya filtra a su propia data
+const PATH_PACIENTES = "/pacientes/"; // lista/detalle; lista ya respeta rol paciente
+const PATH_PAC_ANT = "/paciente-antecedentes/"; // para paciente autenticado, ya filtra a su propia data
 
 /* ================== Tipos ================== */
 type RelFamiliar = "propio" | "padres" | "hermanos" | "abuelos";
@@ -38,12 +38,10 @@ type UsuarioPacienteView = {
   segundo_apellido?: string | null;
   cedula?: string | null;
   fecha_nacimiento?: string | null; // "YYYY-MM-DD"
-  sexo?: string | null;             // "M" | "F" | "O"
-  tipo_sangre?: string | null;      // "O+", etc.
+  sexo?: string | null; // "M" | "F"
+  tipo_sangre?: string | null;
   celular?: string | null;
   foto?: string | null;
-
-  // opcionales
   direccion?: string | null;
   ciudad?: string | null;
   ocupacion?: string | null;
@@ -53,7 +51,7 @@ type PacienteAPI = {
   id_paciente: number;
   id_usuario: number;
 
-  // Contacto de emergencia (del serializer)
+  // Contacto de emergencia
   contacto_emergencia_nom?: string | null;
   contacto_emergencia_cel?: string | null;
   contacto_emergencia_par?: string | null;
@@ -84,6 +82,23 @@ function safeYMD(d?: string | null) {
   return asDate.toLocaleDateString();
 }
 const cap = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+
+function absolutize(url?: string | null) {
+  if (!url) return null;
+  try {
+    new URL(url);
+    return url;
+  } catch {
+    const base = (api.defaults as any)?.baseURL ?? "";
+    let origin = "";
+    try {
+      origin = new URL(base).origin;
+    } catch {
+      origin = window.location.origin;
+    }
+    return `${origin.replace(/\/$/, "")}/${String(url).replace(/^\//, "")}`;
+  }
+}
 
 /* Label genérico con icono */
 function LabelWithIcon({
@@ -140,7 +155,9 @@ export default function PerfilPaciente() {
     }
   })();
 
-  const uInit = (usuarioCtx || usuarioStorage || {}) as Partial<UsuarioPacienteView>;
+  const uInit = (usuarioCtx ||
+    usuarioStorage ||
+    {}) as Partial<UsuarioPacienteView>;
   const [u, setU] = useState<Partial<UsuarioPacienteView>>({
     ...uInit,
     id_paciente:
@@ -159,15 +176,25 @@ export default function PerfilPaciente() {
 
   const [loadingAnt, setLoadingAnt] = useState(false);
   const [propios, setPropios] = useState<{ nombre: string }[]>([]);
-  const [familiares, setFamiliares] = useState<{ nombre: string; parentesco: Exclude<RelFamiliar, "propio"> }[]>(
-    []
-  );
+  const [familiares, setFamiliares] = useState<
+    { nombre: string; parentesco: Exclude<RelFamiliar, "propio"> }[]
+  >([]);
 
   const nombreCompleto = useMemo(() => {
-    return [u.primer_nombre, u.segundo_nombre, u.primer_apellido, u.segundo_apellido]
+    return [
+      u.primer_nombre,
+      u.segundo_nombre,
+      u.primer_apellido,
+      u.segundo_apellido,
+    ]
       .filter(Boolean)
       .join(" ");
-  }, [u.primer_nombre, u.segundo_nombre, u.primer_apellido, u.segundo_apellido]);
+  }, [
+    u.primer_nombre,
+    u.segundo_nombre,
+    u.primer_apellido,
+    u.segundo_apellido,
+  ]);
 
   // ============ Carga de id_paciente, contacto de emergencia y antecedentes ============
   useEffect(() => {
@@ -179,7 +206,9 @@ export default function PerfilPaciente() {
       // 1) Si es paciente, el backend devuelve el suyo sin params
       try {
         const resp = await api.get(PATH_PACIENTES);
-        const list: PacienteAPI[] = Array.isArray(resp.data) ? resp.data : resp.data?.results ?? [];
+        const list: PacienteAPI[] = Array.isArray(resp.data)
+          ? resp.data
+          : resp.data?.results ?? [];
         if (list.length > 0) {
           const p = list[0];
           if (!cancel) {
@@ -203,9 +232,15 @@ export default function PerfilPaciente() {
       // 2) Respaldo: por id_usuario (útil para admin/odo)
       if (u.id_usuario) {
         try {
-          const resp = await api.get(PATH_PACIENTES, { params: { id_usuario: u.id_usuario } });
-          const list: PacienteAPI[] = Array.isArray(resp.data) ? resp.data : resp.data?.results ?? [];
-          const p = list.find((x) => Number(x.id_usuario) === Number(u.id_usuario)) ?? list[0];
+          const resp = await api.get(PATH_PACIENTES, {
+            params: { id_usuario: u.id_usuario },
+          });
+          const list: PacienteAPI[] = Array.isArray(resp.data)
+            ? resp.data
+            : resp.data?.results ?? [];
+          const p =
+            list.find((x) => Number(x.id_usuario) === Number(u.id_usuario)) ??
+            list[0];
           if (p?.id_paciente) {
             if (!cancel) {
               setU((prev) => ({ ...prev, id_paciente: p.id_paciente }));
@@ -237,14 +272,22 @@ export default function PerfilPaciente() {
         let listResp: PacienteAPI[] = [];
 
         if (u.id_usuario) {
-          const resp = await api.get(PATH_PACIENTES, { params: { id_usuario: u.id_usuario } });
-          listResp = Array.isArray(resp.data) ? resp.data : resp.data?.results ?? [];
+          const resp = await api.get(PATH_PACIENTES, {
+            params: { id_usuario: u.id_usuario },
+          });
+          listResp = Array.isArray(resp.data)
+            ? resp.data
+            : resp.data?.results ?? [];
         } else {
           const resp = await api.get(PATH_PACIENTES);
-          listResp = Array.isArray(resp.data) ? resp.data : resp.data?.results ?? [];
+          listResp = Array.isArray(resp.data)
+            ? resp.data
+            : resp.data?.results ?? [];
         }
 
-        const p = listResp.find((x) => Number(x.id_paciente) === Number(idPaciente)) ?? listResp[0];
+        const p =
+          listResp.find((x) => Number(x.id_paciente) === Number(idPaciente)) ??
+          listResp[0];
         if (p) {
           if (!cancel) {
             setEmergNom(p.contacto_emergencia_nom ?? null);
@@ -253,7 +296,6 @@ export default function PerfilPaciente() {
           }
         }
       } catch {
-        // silencioso: se mostrará "—"
       }
     }
 
@@ -267,14 +309,36 @@ export default function PerfilPaciente() {
         await ensureEmergenciaFields(idPaciente);
         if (cancel) return;
 
+        // Cargar datos del usuario para obtener la foto actualizada
+        if (u.id_usuario) {
+          try {
+            const usrRes = await api.get(`/usuarios/${u.id_usuario}/`);
+            const userData = usrRes.data;
+            // Absolutizar la URL de la foto
+            const fotoUrl = userData.foto ? absolutize(userData.foto) : null;
+            if (!cancel) {
+              setU((prev) => ({ ...prev, foto: fotoUrl }));
+            }
+          } catch (err) {
+            console.error("Error cargando foto del usuario:", err);
+          }
+        }
+
+        if (cancel) return;
+
         // Antecedentes del paciente
-        const respAnt = await api.get(PATH_PAC_ANT, { params: { id_paciente: idPaciente } });
+        const respAnt = await api.get(PATH_PAC_ANT, {
+          params: { id_paciente: idPaciente },
+        });
         const rows: PacienteAntecedenteRow[] = Array.isArray(respAnt.data)
           ? respAnt.data
           : respAnt.data?.results ?? [];
 
         const propiosTmp: { nombre: string }[] = [];
-        const famTmp: { nombre: string; parentesco: Exclude<RelFamiliar, "propio"> }[] = [];
+        const famTmp: {
+          nombre: string;
+          parentesco: Exclude<RelFamiliar, "propio">;
+        }[] = [];
 
         for (const r of rows) {
           const rel = (r.relacion_familiar || "propio") as RelFamiliar;
@@ -282,12 +346,15 @@ export default function PerfilPaciente() {
 
           if (rel === "propio") {
             propiosTmp.push({ nombre: name });
-          } else if (rel === "padres" || rel === "hermanos" || rel === "abuelos") {
+          } else if (
+            rel === "padres" ||
+            rel === "hermanos" ||
+            rel === "abuelos"
+          ) {
             famTmp.push({ nombre: name, parentesco: rel });
           }
         }
 
-        // de-dup
         const seenProp = new Set<string>();
         const seenFam = new Set<string>();
         const propiosUniq = propiosTmp.filter((x) => {
@@ -321,7 +388,7 @@ export default function PerfilPaciente() {
     return () => {
       cancel = true;
     };
-  }, [u.id_usuario, u.id_paciente]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [u.id_usuario, u.id_paciente]);
 
   return (
     <div className="space-y-6">
@@ -341,9 +408,13 @@ export default function PerfilPaciente() {
       <div className="bg-white rounded-xl shadow p-6 grid grid-cols-1 md:grid-cols-3 gap-6">
         {/* Columna: Foto */}
         <div className="md:col-span-1">
-          <div className="w-28 h-28 rounded-full bg-gray-200 overflow-hidden">
+          <div className="w-40 h-40 rounded-full bg-gray-200 overflow-hidden">
             {u.foto ? (
-              <img src={u.foto} alt="Foto de perfil" className="w-full h-full object-cover" />
+              <img
+                src={u.foto}
+                alt="Foto de perfil"
+                className="w-full h-full object-cover"
+              />
             ) : (
               <div className="w-full h-full flex items-center justify-center text-gray-500 text-sm">
                 Sin foto
@@ -356,41 +427,57 @@ export default function PerfilPaciente() {
         <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <LabelWithIcon icon={User} text="Nombre completo" />
-            <p className="font-medium leading-tight mt-0.5">{nombreCompleto || "—"}</p>
+            <p className="font-medium leading-tight mt-0.5">
+              {nombreCompleto || "—"}
+            </p>
           </div>
           <div>
             <LabelWithIcon icon={IdCard} text="Cédula" />
-            <p className="font-medium leading-tight mt-0.5">{u.cedula || "—"}</p>
+            <p className="font-medium leading-tight mt-0.5">
+              {u.cedula || "—"}
+            </p>
           </div>
           <div>
             <LabelSexo sexo={u.sexo} />
-            <p className="font-medium leading-tight mt-0.5">{sexoLabel(u.sexo)}</p>
+            <p className="font-medium leading-tight mt-0.5">
+              {sexoLabel(u.sexo)}
+            </p>
           </div>
           <div>
             <LabelWithIcon icon={Calendar} text="Fecha de nacimiento" />
-            <p className="font-medium leading-tight mt-0.5">{safeYMD(u.fecha_nacimiento)}</p>
+            <p className="font-medium leading-tight mt-0.5">
+              {safeYMD(u.fecha_nacimiento)}
+            </p>
           </div>
           <div>
             <LabelWithIcon icon={Droplet} text="Tipo de sangre" />
-            <p className="font-medium leading-tight mt-0.5">{u.tipo_sangre || "—"}</p>
+            <p className="font-medium leading-tight mt-0.5">
+              {u.tipo_sangre || "—"}
+            </p>
           </div>
 
           {typeof u.ocupacion !== "undefined" && (
             <div>
               <LabelWithIcon icon={Briefcase} text="Ocupación" />
-              <p className="font-medium leading-tight mt-0.5">{u.ocupacion || "—"}</p>
+              <p className="font-medium leading-tight mt-0.5">
+                {u.ocupacion || "—"}
+              </p>
             </div>
           )}
           {typeof u.direccion !== "undefined" && (
             <div className="md:col-span-2">
               <LabelWithIcon icon={MapPin} text="Dirección" />
-              <p className="font-medium leading-tight mt-0.5">{u.direccion || "—"}</p>
+              <p className="font-medium leading-tight mt-0.5">
+                {u.direccion || "—"}
+              </p>
             </div>
           )}
           {typeof u.ciudad !== "undefined" && (
             <div>
               <LabelWithIcon icon={MapPin} text="Ciudad" />
-              <p className="font-medium leading-tight mt-0.5">{u.ciudad || "—"}</p>
+              <p className="font-medium leading-tight mt-0.5">
+                {u.ciudad || "—"}
+              </p>
             </div>
           )}
         </div>
@@ -400,7 +487,9 @@ export default function PerfilPaciente() {
       <div className="bg-white rounded-xl shadow p-6 grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
           <LabelWithIcon icon={Mail} text="Email" />
-          <p className="font-medium leading-tight mt-0.5">{u.email || u.usuario_email || "—"}</p>
+          <p className="font-medium leading-tight mt-0.5">
+            {u.email || u.usuario_email || "—"}
+          </p>
         </div>
         <div>
           <LabelWithIcon icon={Phone} text="Celular" />
@@ -417,15 +506,21 @@ export default function PerfilPaciente() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div>
             <LabelWithIcon icon={UsersIcon} text="Nombre" />
-            <p className="font-medium leading-tight mt-0.5">{emergNom || "—"}</p>
+            <p className="font-medium leading-tight mt-0.5">
+              {emergNom || "—"}
+            </p>
           </div>
           <div>
             <LabelWithIcon icon={IdCard} text="Parentesco" />
-            <p className="font-medium leading-tight mt-0.5">{emergPar || "—"}</p>
+            <p className="font-medium leading-tight mt-0.5">
+              {emergPar || "—"}
+            </p>
           </div>
           <div>
             <LabelWithIcon icon={Phone} text="Celular" />
-            <p className="font-medium leading-tight mt-0.5">{emergCel || "—"}</p>
+            <p className="font-medium leading-tight mt-0.5">
+              {emergCel || "—"}
+            </p>
           </div>
         </div>
       </div>
@@ -438,7 +533,9 @@ export default function PerfilPaciente() {
           {loadingAnt ? (
             <div className="text-sm text-gray-500">Cargando…</div>
           ) : propios.length === 0 ? (
-            <div className="text-sm text-gray-500">Sin antecedentes propios.</div>
+            <div className="text-sm text-gray-500">
+              Sin antecedentes propios.
+            </div>
           ) : (
             <ul className="space-y-2">
               {propios.map((a, idx) => (
@@ -453,11 +550,15 @@ export default function PerfilPaciente() {
 
         {/* Derecha: Familiares */}
         <div className="bg-white rounded-xl shadow p-6">
-          <h2 className="text-lg font-semibold mb-4">Antecedentes familiares</h2>
+          <h2 className="text-lg font-semibold mb-4">
+            Antecedentes familiares
+          </h2>
           {loadingAnt ? (
             <div className="text-sm text-gray-500">Cargando…</div>
           ) : familiares.length === 0 ? (
-            <div className="text-sm text-gray-500">Sin antecedentes familiares.</div>
+            <div className="text-sm text-gray-500">
+              Sin antecedentes familiares.
+            </div>
           ) : (
             <ul className="space-y-2">
               {familiares.map((a, idx) => (
@@ -465,7 +566,9 @@ export default function PerfilPaciente() {
                   <span className="inline-block h-1.5 w-1.5 rounded-full bg-gray-400 mt-1.5" />
                   <div className="leading-tight">
                     <p className="font-medium">{a.nombre}</p>
-                    <p className="text-sm text-gray-600">Parentesco: {cap(a.parentesco)}</p>
+                    <p className="text-sm text-gray-600">
+                      Parentesco: {cap(a.parentesco)}
+                    </p>
                   </div>
                 </li>
               ))}

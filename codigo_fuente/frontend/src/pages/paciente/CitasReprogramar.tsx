@@ -8,12 +8,12 @@ import {
   X as XIcon,
   Info,
   AlertTriangle,
-  RotateCcw, // ← ícono para el título
+  RotateCcw,
 } from "lucide-react";
 
 /* ==================== Tipos ==================== */
 type HorarioVigente = {
-  dia_semana: number; // 0=Lunes..6=Domingo (canónico)
+  dia_semana: number; // 0=Lunes..6=Domingo
   hora_inicio: string; // "HH:MM"
   hora_fin: string; // "HH:MM"
   vigente?: boolean;
@@ -85,7 +85,7 @@ export type CitasReprogramarProps = {
 
 /* ==================== Helpers ==================== */
 const LUNCH_FROM = 13; // 13:00
-const LUNCH_TO = 15; // 15:00 (exclusivo)
+const LUNCH_TO = 15; // 15:00
 const MAX_MONTHS_AHEAD = 3;
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
@@ -182,7 +182,6 @@ export default function CitasReprogramar({
   const [horarios, setHorarios] = useState<HorarioVigente[]>([]);
   const [consultorios, setConsultorios] = useState<ConsultorioOpt[]>([]);
 
-  // originales (para resaltar y “Hora agendada”)
   const originalFechaRef = useRef<string | null>(null); // "YYYY-MM-DD"
   const originalHoraRef = useRef<string | null>(null); // "HH:MM"
   const originalConsultorioRef = useRef<number | null>(null);
@@ -192,7 +191,7 @@ export default function CitasReprogramar({
   const maxISO = addMonthsISO(hoyISO, MAX_MONTHS_AHEAD);
 
   const [fecha, setFecha] = useState<string>(hoyISO);
-  const [horaSel, setHoraSel] = useState<string>(""); // nueva hora seleccionada
+  const [horaSel, setHoraSel] = useState<string>(""); 
   const [horaSelConsultorio, setHoraSelConsultorio] = useState<number | null>(
     null
   );
@@ -272,7 +271,6 @@ export default function CitasReprogramar({
         );
         setConsultorios(coList);
 
-        // originales …
         const fechaISO = String(c.fecha).slice(0, 10);
         const hhmm = (c.hora || "").slice(0, 5);
         originalFechaRef.current = fechaISO;
@@ -546,7 +544,6 @@ export default function CitasReprogramar({
         setHoraOptions(opts);
       } catch (e: any) {
         if (e?.code !== "ERR_CANCELED") {
-          // opcional: loggear o mostrar mensaje suave
         }
       } finally {
         if (!ac.signal.aborted && reqRef.current === ver)
@@ -555,7 +552,6 @@ export default function CitasReprogramar({
     })();
 
     return () => ac.abort();
-    // Nota: dependemos de orderedConsultorios (memo) y NO del array bruto consultorios
   }, [
     odontologoId,
     fecha,
@@ -1121,8 +1117,6 @@ export default function CitasReprogramar({
                 Se prioriza el consultorio por defecto; si está ocupado, se
                 ofrece un alterno.
               </div>
-
-              {/* (ELIMINADA) Leyenda arriba de Motivo: Hora original / Selección actual */}
             </div>
           )}
 

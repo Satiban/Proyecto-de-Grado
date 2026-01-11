@@ -19,8 +19,12 @@ import {
   ChevronsLeft,
   ChevronsRight,
   ArrowLeft,
+  Stethoscope,
+  Info,
+  Loader2,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
+import { e164ToLocal } from "../../utils/phoneFormat";
 
 /* =========================
    Tipos
@@ -38,6 +42,10 @@ type Paciente = {
   usuario_email?: string | null;
   foto?: string | null;
   activo?: boolean | null;
+  contacto_emergencia_nom?: string | null;
+  contacto_emergencia_cel?: string | null;
+  contacto_emergencia_par?: string | null;
+  contacto_emergencia_email?: string | null;
 };
 
 type EstadoCitaRaw =
@@ -64,6 +72,11 @@ type Cita = {
   id_odontologo?: number | null;
   odontologo_nombre?: string | null;
   consultorio?: { id_consultorio: number; numero: string } | null;
+  pago?: {
+    id_pago_cita: number;
+    estado_pago: "pendiente" | "pagado" | "reembolsado";
+    monto?: string;
+  } | null;
 };
 
 type AntecedentePaciente = {
@@ -259,6 +272,121 @@ function estadoPill(estadoRaw: EstadoCitaRaw) {
   );
 }
 
+/* Pill de estado de pago */
+function estadoPagoPill(cita: Cita) {
+  // Si la cita no está realizada, no aplica mostrar pago
+  if (cita.estado !== "realizada") {
+    return <span className="text-gray-400 text-xs">—</span>;
+  }
+
+  // Si no hay pago registrado, mostrar como Pendiente
+  if (!cita.pago) {
+    return (
+      <span className="inline-block text-xs px-2 py-1 rounded-full border bg-amber-100 text-amber-800 border-amber-200">
+        Pendiente
+      </span>
+    );
+  }
+
+  const estado = cita.pago.estado_pago;
+  const cls =
+    estado === "pagado"
+      ? "bg-emerald-100 text-emerald-800 border-emerald-200"
+      : estado === "reembolsado"
+      ? "bg-red-100 text-red-800 border-red-200"
+      : "bg-amber-100 text-amber-800 border-amber-200";
+
+  const label =
+    estado === "pagado"
+      ? "Pagado"
+      : estado === "reembolsado"
+      ? "Reembolsado"
+      : "Pendiente";
+
+  return (
+    <span
+      className={`inline-block text-xs px-2 py-1 rounded-full border ${cls}`}
+    >
+      {label}
+    </span>
+  );
+}
+
+function AccionesCitaPaciente({ cita }: { cita: Cita }) {
+  const { id_cita, estado } = cita;
+  const canon = canonEstado(estado);
+
+  return (
+    <div className="flex items-center justify-center gap-2">
+      {/* Pendiente Ver + Editar */}
+      {canon === "pendiente" && (
+        <>
+          <Link
+            to={`/odontologo/citas/${id_cita}/ver`}
+            className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
+          >
+            <Eye className="size-4" /> Ver
+          </Link>
+          <Link
+            to={`/odontologo/citas/${id_cita}/editar`}
+            className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
+          >
+            <Pencil className="size-4" /> Editar
+          </Link>
+        </>
+      )}
+
+      {/* Cancelada Ver + Editar */}
+      {canon === "cancelada" && (
+        <>
+          <Link
+            to={`/odontologo/citas/${id_cita}/ver`}
+            className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
+          >
+            <Eye className="size-4" /> Ver
+          </Link>
+          <Link
+            to={`/odontologo/citas/${id_cita}/editar`}
+            className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
+          >
+            <Pencil className="size-4" /> Editar
+          </Link>
+        </>
+      )}
+
+      {/* Reprogramación solo Editar */}
+      {canon === "reprogramación" && (
+        <Link
+          to={`/odontologo/citas/${id_cita}/editar`}
+          className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
+        >
+          <Pencil className="size-4" /> Editar
+        </Link>
+      )}
+
+      {/* Confirmada solo Atender */}
+      {canon === "confirmada" && (
+        <Link
+          to={`/odontologo/citas/${id_cita}/atencion`}
+          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 bg-emerald-600 text-white hover:bg-emerald-700"
+        >
+          <Stethoscope className="size-4" /> Atender
+        </Link>
+      )}
+
+      {/* Realizada solo Ver */}
+      {canon === "realizada" && (
+        <Link
+          to={`/odontologo/citas/${id_cita}/ver`}
+          className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
+        >
+          <Eye className="size-4" /> Ver
+        </Link>
+      )}
+    </div>
+  );
+}
+
 /* =========================
    Componente
    ========================= */
@@ -290,6 +418,14 @@ export default function VerPaciente() {
   const [errorPerfil, setErrorPerfil] = useState<string | null>(null);
   const [errorCitas, setErrorCitas] = useState<string | null>(null);
   const [errorAnt, setErrorAnt] = useState<string | null>(null);
+  
+  // Estado para verificar si también es odontólogo
+  const [esOdontologo, setEsOdontologo] = useState<boolean | null>(null);
+  const [checkingOdontologo, setCheckingOdontologo] = useState(false);
+  
+  // Estado para verificar si también es administrador
+  const [esAdmin, setEsAdmin] = useState<boolean | null>(null);
+  const [checkingAdmin, setCheckingAdmin] = useState(false);
 
   // Filtros mínimos (fecha/estado)
   const [fFecha, setFFecha] = useState("");
@@ -360,7 +496,7 @@ export default function VerPaciente() {
           sexo: u.sexo ?? null,
           fecha_nacimiento: u.fecha_nacimiento ?? null,
           tipo_sangre: u.tipo_sangre ?? null,
-          celular: u.celular ?? null,
+          celular: e164ToLocal(u.celular ?? null),
           usuario_email: u.email ?? u.usuario_email ?? null,
           foto: absolutize(u.foto ?? p.foto ?? null),
           activo:
@@ -369,12 +505,41 @@ export default function VerPaciente() {
               : typeof u.activo === "boolean"
               ? u.activo
               : null,
+          contacto_emergencia_nom: p.contacto_emergencia_nom ?? null,
+          contacto_emergencia_cel: e164ToLocal(p.contacto_emergencia_cel ?? null),
+          contacto_emergencia_par: p.contacto_emergencia_par ? p.contacto_emergencia_par.toLowerCase() : null,
+          contacto_emergencia_email: p.contacto_emergencia_email ?? null,
         };
 
         setPac(parsed);
+        
+        // Verificar si también es odontólogo
+        if (idUsuario != null) {
+          setCheckingOdontologo(true);
+          try {
+            const verifyRes = await api.get(`/usuarios/${idUsuario}/verificar-rol-odontologo/`);
+            setEsOdontologo(verifyRes.data?.existe === true);
+          } catch (err) {
+            setEsOdontologo(null);
+          } finally {
+            setCheckingOdontologo(false);
+          }
+        }
+        
+        // Verificar si también es administrador (is_staff=true)
+        if (idUsuario != null) {
+          setCheckingAdmin(true);
+          try {
+            const userRes = await api.get(`/usuarios/${idUsuario}/`);
+            setEsAdmin(userRes.data?.is_staff === true);
+          } catch (err) {
+            setEsAdmin(null);
+          } finally {
+            setCheckingAdmin(false);
+          }
+        }
       } catch (e: any) {
         if (e?.name === "CanceledError") return;
-        console.error(e);
         setErrorPerfil("No se pudo cargar el perfil del paciente.");
       } finally {
         setLoadingPerfil(false);
@@ -426,7 +591,6 @@ export default function VerPaciente() {
           e?.message === "canceled"
         )
           return;
-        console.error("Antecedentes detalle:", e);
         setErrorAnt("No se pudieron cargar los antecedentes.");
       } finally {
         if (alive) setLoadingAnt(false);
@@ -490,7 +654,6 @@ export default function VerPaciente() {
         setCitas(ordenadas);
       } catch (e: any) {
         if (e?.name === "CanceledError") return;
-        console.error(e);
         setErrorCitas("No se pudo cargar el historial de citas.");
       } finally {
         setLoadingCitas(false);
@@ -561,35 +724,88 @@ export default function VerPaciente() {
     [citas, startIndex, endIndex]
   );
 
-  /* ====== Agrupación por fecha (con rowSpan) sobre currentRows ====== */
-  const grupos = useMemo(() => {
-    const list: { fecha: string; rows: Cita[] }[] = [];
-    const idxMap = new Map<string, number>();
-    for (const c of currentRows) {
-      const f = c.fecha;
-      if (idxMap.has(f)) {
-        list[idxMap.get(f)!].rows.push(c);
-      } else {
-        idxMap.set(f, list.length);
-        list.push({ fecha: f, rows: [c] });
-      }
-    }
-    return list;
-  }, [currentRows]);
-
   const goFirst = () => setPage(1);
   const goPrev = () => setPage((p) => Math.max(1, p - 1));
   const goNext = () => setPage((p) => Math.min(totalPages, p + 1));
   const goLast = () => setPage(totalPages);
 
+  // Datos del paciente: mostrar solo los propios o "—"
+  const pacienteCelular = pac?.celular?.trim() || null;
+  const pacienteEmail = pac?.usuario_email?.trim() || null;
+  
+  // Si el email es del sistema (cualquier @oralflow.system), mostrar "—"
+  const esEmailSistema = pacienteEmail?.includes("@oralflow.system");
+  const displayCorreoPaciente = (pacienteEmail && !esEmailSistema) ? pacienteEmail : null;
+  
+  // Datos del contacto de emergencia
+  const contactoNombre = pac?.contacto_emergencia_nom?.trim() || null;
+  const contactoCelular = pac?.contacto_emergencia_cel?.trim() || null;
+  const contactoEmail = pac?.contacto_emergencia_email?.trim() || null;
+  const contactoParentesco = pac?.contacto_emergencia_par || null;
+  
+  // Calcular si es menor de edad (< 18 años)
+  const esMenor = pac?.fecha_nacimiento 
+    ? (() => {
+        const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(pac.fecha_nacimiento);
+        if (!match) return false;
+        const year = Number(match[1]);
+        const month = Number(match[2]) - 1;
+        const day = Number(match[3]);
+        const birth = new Date(year, month, day);
+        if (Number.isNaN(birth.getTime())) return false;
+        const now = new Date();
+        let age = now.getFullYear() - birth.getFullYear();
+        const monthDiff = now.getMonth() - birth.getMonth();
+        if (monthDiff < 0 || (monthDiff === 0 && now.getDate() < birth.getDate())) {
+          age--;
+        }
+        return age < 18;
+      })()
+    : false;
+
   return (
     <div className="px-0 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold flex items-center gap-2">
-          <User className="h-6 w-6 text-gray-600" />
-          Detalle del paciente
-        </h1>
+        <div>
+          <h1 className="text-2xl font-bold flex items-center gap-2">
+            <User className="h-6 w-6 text-gray-600" />
+            Detalle del paciente
+          </h1>
+          
+          {/* Indicadores de verificación */}
+          <div className="space-y-1 mt-1">
+            {/* Verificando odontólogo */}
+            {checkingOdontologo && (
+              <p className="text-xs text-gray-500 flex items-center gap-1">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                Verificando datos de odontólogo...
+              </p>
+            )}
+            {/* Es odontólogo */}
+            {esOdontologo === true && (
+              <p className="text-xs text-blue-600 flex items-center gap-1">
+                <Info className="h-3 w-3" />
+                Este paciente también es odontólogo
+              </p>
+            )}
+            
+            {/* Verificando admin */}
+            {checkingAdmin && (
+              <p className="text-xs text-gray-500 flex items-center gap-1">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                Verificando permisos de administrador...
+              </p>
+            )}
+            {/* Es admin */}
+            {esAdmin === true && (
+              <p className="text-xs text-purple-600 flex items-center gap-1">
+                <Info className="h-3 w-3" />
+                Este paciente también es administrador
+              </p>
+            )}
+          </div>
+        </div>
 
         <div className="flex items-center gap-2">
           <button
@@ -601,7 +817,9 @@ export default function VerPaciente() {
           </button>
 
           <button
-            onClick={() => navigate(`/odontologo/pacientes/${pacienteId}/editar`)}
+            onClick={() =>
+              navigate(`/odontologo/pacientes/${pacienteId}/editar`)
+            }
             className="inline-flex items-center gap-2 rounded-lg bg-gray-800 text-white px-3 py-1.5 text-sm shadow hover:bg-black/80"
             title="Editar perfil"
           >
@@ -626,9 +844,11 @@ export default function VerPaciente() {
             title="Datos personales"
             icon={<User className="h-5 w-5" />}
           >
-            <div className="grid grid-cols-1 md:grid-cols-7 gap-4 items-start">
-              {/* Foto + Estado */}
-              <div className="md:col-span-2 flex flex-col items-center gap-3">
+            <div className="grid grid-cols-1 gap-6">
+              {/* Fila superior: Foto + Datos básicos + Contacto de emergencia */}
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-start">
+                {/* Col izq: Foto + Estado */}
+                <div className="md:col-span-3 flex flex-col items-center gap-3">
                 <div className="w-44 h-44 overflow-hidden rounded-full bg-gray-50 border">
                   {loadingPerfil ? (
                     <div className="flex h-full w-full items-center justify-center text-sm text-gray-400">
@@ -647,19 +867,22 @@ export default function VerPaciente() {
                   )}
                 </div>
 
-                {loadingPerfil ? null : pac?.activo ? (
-                  <span className="rounded bg-green-100 px-2 py-0.5 text-sm text-green-700">
-                    Activo
-                  </span>
-                ) : (
-                  <span className="rounded bg-red-100 px-2 py-0.5 text-sm text-red-700">
-                    Inactivo
-                  </span>
+                {loadingPerfil ? null : (
+                  <div className="flex items-center gap-2 justify-center">
+                    <span className={`rounded px-2 py-0.5 text-sm ${pac?.activo ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                      {pac?.activo ? 'Activo' : 'Inactivo'}
+                    </span>
+                    {esMenor && (
+                      <span className="rounded bg-blue-100 px-2 py-0.5 text-sm text-blue-700">
+                        Menor
+                      </span>
+                    )}
+                  </div>
                 )}
-              </div>
+                </div>
 
-              {/* Datos básicos */}
-              <div className="md:col-span-3 space-y-1">
+                {/* Col centro: Datos básicos */}
+                <div className="md:col-span-5 space-y-1">
                 <InfoInline
                   icon={<User className="h-4 w-4" />}
                   label="Nombre"
@@ -688,99 +911,128 @@ export default function VerPaciente() {
                 <InfoInline
                   icon={<Phone className="h-4 w-4" />}
                   label="Celular"
-                  value={pac?.celular ?? "—"}
+                  value={pacienteCelular ?? "—"}
                 />
                 <InfoInline
                   icon={<Mail className="h-4 w-4" />}
                   label="Correo"
-                  value={pac?.usuario_email ?? "—"}
+                  value={displayCorreoPaciente ?? "—"}
                 />
-              </div>
-
-              {/* Antecedentes */}
-              <div className="md:col-span-2">
-                <h4 className="text-sm font-semibold mb-2">Antecedentes</h4>
-
-                {/* Propios */}
-                <div className="mb-3">
-                  <p className="text-xs uppercase tracking-wide text-gray-500 mb-1">
-                    Propios
-                  </p>
-                  {loadingAnt ? (
-                    <p className="text-sm text-gray-400">Cargando…</p>
-                  ) : errorAnt ? (
-                    <p className="text-sm text-red-600">{errorAnt}</p>
-                  ) : antPropios.length === 0 ? (
-                    <p className="text-sm text-gray-500">
-                      Sin antecedentes propios
-                    </p>
-                  ) : (
-                    <ul className="list-disc pl-4 space-y-1 text-sm marker:text-gray-400">
-                      {antPropios.map((a, i) => (
-                        <li key={`ap-${i}`} className="leading-6">
-                          <span className="font-normal text-gray-900">
-                            {antNombre(a)}
-                          </span>
-                          {a.observacion || a.descripcion ? (
-                            <span className="text-gray-600">
-                              {" "}
-                              — {a.observacion ?? a.descripcion}
-                            </span>
-                          ) : null}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
                 </div>
 
-                {/* Familiares */}
-                <div>
-                  <p className="text-xs uppercase tracking-wide text-gray-500 mb-1">
-                    Familiares
-                  </p>
-                  {loadingAnt ? (
-                    <p className="text-sm text-gray-400">Cargando…</p>
-                  ) : errorAnt ? (
-                    <p className="text-sm text-red-600">{errorAnt}</p>
-                  ) : antFamilia.length === 0 ? (
-                    <p className="text-sm text-gray-500">
-                      Sin antecedentes familiares
+                {/* Col derecha: Contacto de Emergencia */}
+                <div className="md:col-span-4 border-l pl-6">
+                  <h4 className="text-sm font-semibold mb-2">Contacto de Emergencia</h4>
+                <div className="space-y-1">
+                  <InfoInline
+                    icon={<User className="h-4 w-4" />}
+                    label="Nombre"
+                    value={contactoNombre ?? "—"}
+                  />
+                  <InfoInline
+                    icon={<Phone className="h-4 w-4" />}
+                    label="Celular"
+                    value={contactoCelular ?? "—"}
+                  />
+                  <InfoInline
+                    icon={<Mail className="h-4 w-4" />}
+                    label="Correo"
+                    value={contactoEmail ?? "—"}
+                  />
+                  <InfoInline
+                    icon={<User className="h-4 w-4" />}
+                    label="Parentesco"
+                    value={contactoParentesco ?? "—"}
+                  />
+                </div>
+                </div>
+              </div>
+
+              {/* Fila inferior: Antecedentes */}
+              <div className="border-t pt-4">
+                <h4 className="text-sm font-semibold mb-3">Antecedentes</h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {/* Propios */}
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-gray-500 mb-1">
+                      Propios
                     </p>
-                  ) : (
-                    <div className="space-y-2">
-                      {["padres", "hermanos", "abuelos"].map((par) => {
-                        const grupo = antFamilia.filter(
-                          (a) => (antRel(a) as string) === par
-                        );
-                        if (grupo.length === 0) return null;
-                        return (
-                          <div key={par}>
-                            <p className="text-xs text-gray-600 mb-0.5 capitalize">
-                              {par}
-                            </p>
-                            <ul className="list-disc pl-4 space-y-1 text-sm marker:text-gray-400">
-                              {grupo.map((a, i) => (
-                                <li
-                                  key={`af-${par}-${i}`}
-                                  className="leading-6"
-                                >
-                                  <span className="font-normal text-gray-900">
-                                    {antNombre(a)}
-                                  </span>
-                                  {a.observacion || a.descripcion ? (
-                                    <span className="text-gray-600">
-                                      {" "}
-                                      — {a.observacion ?? a.descripcion}
+                    {loadingAnt ? (
+                      <p className="text-sm text-gray-400">Cargando…</p>
+                    ) : errorAnt ? (
+                      <p className="text-sm text-red-600">{errorAnt}</p>
+                    ) : antPropios.length === 0 ? (
+                      <p className="text-sm text-gray-500">
+                        Sin antecedentes propios
+                      </p>
+                    ) : (
+                      <ul className="list-disc pl-4 space-y-1 text-sm marker:text-gray-400">
+                        {antPropios.map((a, i) => (
+                          <li key={`ap-${i}`} className="leading-6">
+                            <span className="font-normal text-gray-900">
+                              {antNombre(a)}
+                            </span>
+                            {a.observacion || a.descripcion ? (
+                              <span className="text-gray-600">
+                                {" "}
+                                — {a.observacion ?? a.descripcion}
+                              </span>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+
+                  {/* Familiares */}
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-gray-500 mb-1">
+                      Familiares
+                    </p>
+                    {loadingAnt ? (
+                      <p className="text-sm text-gray-400">Cargando…</p>
+                    ) : errorAnt ? (
+                      <p className="text-sm text-red-600">{errorAnt}</p>
+                    ) : antFamilia.length === 0 ? (
+                      <p className="text-sm text-gray-500">
+                        Sin antecedentes familiares
+                      </p>
+                    ) : (
+                      <div className="space-y-2">
+                        {["padres", "hermanos", "abuelos"].map((par) => {
+                          const grupo = antFamilia.filter(
+                            (a) => (antRel(a) as string) === par
+                          );
+                          if (grupo.length === 0) return null;
+                          return (
+                            <div key={par}>
+                              <p className="text-xs text-gray-600 mb-0.5 capitalize">
+                                {par}
+                              </p>
+                              <ul className="list-disc pl-4 space-y-1 text-sm marker:text-gray-400">
+                                {grupo.map((a, i) => (
+                                  <li
+                                    key={`af-${par}-${i}`}
+                                    className="leading-6"
+                                  >
+                                    <span className="font-normal text-gray-900">
+                                      {antNombre(a)}
                                     </span>
-                                  ) : null}
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
+                                    {a.observacion || a.descripcion ? (
+                                      <span className="text-gray-600">
+                                        {" "}
+                                        — {a.observacion ?? a.descripcion}
+                                      </span>
+                                    ) : null}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
@@ -860,134 +1112,60 @@ export default function VerPaciente() {
                 <th className="py-2 px-3 text-center">Hora</th>
                 <th className="py-2 px-3 text-center">Motivo</th>
                 <th className="py-2 px-3 text-center">Consultorio</th>
-                <th className="py-2 px-3 text-center">Estado</th>
-                <th className="py-2 px-3 text-center w-40">Acción</th>
+                <th className="py-2 px-3 text-center">Estado Cita</th>
+                <th className="py-2 px-3 text-center">Estado Pago</th>
+                <th className="py-2 px-3 text-center">Acción</th>
               </tr>
             </thead>
 
             <tbody>
               {loadingCitas ? (
                 <tr>
-                  <td colSpan={6} className="py-6 text-center">
+                  <td colSpan={7} className="py-6 text-center">
                     Cargando…
                   </td>
                 </tr>
               ) : currentRows.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-6 text-center text-gray-500">
+                  <td colSpan={7} className="py-6 text-center text-gray-500">
                     Sin resultados
                   </td>
                 </tr>
               ) : (
-                grupos.map(({ fecha, rows }) => {
-                  const first = rows[0];
-                  const rest = rows.slice(1);
-
-                  return (
-                    <tbody key={`g-${fecha}`} className="contents">
-                      <tr className="border-b border-gray-200">
-                        <td
-                          className="py-2 px-3 text-center align-top font-medium"
-                          rowSpan={rows.length}
-                        >
-                          {formatFechaLocalYMD(fecha)}
-                        </td>
-                        <td className="py-2 px-3 text-center tabular-nums">
-                          {formatHora(first.hora) || "—"}
-                        </td>
-                        <td className="py-2 px-3 text-center">
-                          {first.motivo ?? "—"}
-                        </td>
-                        <td className="py-2 px-3 text-center">
-                          {first.consultorio
-                            ? `Cons. ${first.consultorio.numero}`
-                            : "—"}
-                        </td>
-                        <td className="py-2 px-3 text-center">
-                          {estadoPill(first.estado)}
-                        </td>
-                        <td className="py-2 px-3 text-center">
-                          <div className="flex items-center justify-center gap-2">
-                            <Link
-                              to={`/odontologo/citas/${first.id_cita}/ver`}
-                              className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
-                              title="Ver detalles"
-                            >
-                              <Eye className="size-4" />
-                              Ver
-                            </Link>
-                            <Link
-                              to={`/odontologo/citas/${first.id_cita}/editar`}
-                              className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 bg-white text-gray-900 hover:bg-gray-50"
-                              title="Editar cita"
-                            >
-                              <Pencil className="size-4" />
-                              Editar
-                            </Link>
-                          </div>
-                        </td>
-                      </tr>
-
-                      {rest.map((cita, i) => (
-                        <tr
-                          key={`r-${fecha}-${cita.id_cita}-${i}`}
-                          className="border-b border-gray-200"
-                        >
-                          <td className="py-2 px-3 text-center tabular-nums">
-                            {formatHora(cita.hora) || "—"}
-                          </td>
-                          <td className="py-2 px-3 text-center">
-                            {cita.motivo ?? "—"}
-                          </td>
-                          <td className="py-2 px-3 text-center">
-                            {cita.consultorio
-                              ? `Cons. ${cita.consultorio.numero}`
-                              : "—"}
-                          </td>
-                          <td className="py-2 px-3 text-center">
-                            {estadoPill(cita.estado)}
-                          </td>
-                          <td className="py-2 px-3 text-center">
-                            <div className="flex items-center justify-center gap-2">
-                              <Link
-                                to={`/odontologo/citas/${cita.id_cita}/ver`}
-                                className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
-                                title="Ver detalles"
-                              >
-                                <Eye className="size-4" />
-                                Ver
-                              </Link>
-                              <Link
-                                to={`/odontologo/citas/${cita.id_cita}/editar`}
-                                className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 bg-white text-gray-900 hover:bg-gray-50"
-                                title="Editar cita"
-                              >
-                                <Pencil className="size-4" />
-                                Editar
-                              </Link>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  );
-                })
+                currentRows.map((c) => (
+                  <tr
+                    key={`${c.id_cita}-${c.fecha}-${c.hora ?? ""}`}
+                    className="border-b border-gray-200"
+                  >
+                    <td className="py-2 px-3 text-center">
+                      {formatFechaLocalYMD(c.fecha)}
+                    </td>
+                    <td className="py-2 px-3 text-center tabular-nums">
+                      {formatHora(c.hora) || "—"}
+                    </td>
+                    <td className="py-2 px-3 text-center">{c.motivo ?? "—"}</td>
+                    <td className="py-2 px-3 text-center">
+                      {c.consultorio ? `Cons. ${c.consultorio.numero}` : "—"}
+                    </td>
+                    <td className="py-2 px-3 text-center">
+                      {estadoPill(c.estado)}
+                    </td>
+                    <td className="py-2 px-3 text-center">
+                      {estadoPagoPill(c)}
+                    </td>
+                    <td className="py-2 px-3 text-center">
+                      <AccionesCitaPaciente cita={c} />
+                    </td>
+                  </tr>
+                ))
               )}
             </tbody>
           </table>
-        </div>
 
-        {/* Paginación */}
-        {!loadingCitas && total > 0 && (
-          <div className="px-4 py-3 border-t bg-gray-100">
-            <div className="flex items-center justify-between">
-              {/* Izquierda: total citas */}
-              <div className="text-sm text-gray-700">
-                Citas totales: <span className="font-semibold">{total}</span>
-              </div>
-
-              {/* Centro: botones de paginación */}
-              <div className="flex items-center gap-1">
+          {/* paginación dentro de la card */}
+          {!loadingCitas && total > 0 && (
+            <div className="px-4 py-3 border-t bg-gray-100">
+              <div className="flex items-center justify-center gap-1">
                 <button
                   onClick={goFirst}
                   disabled={safePage === 1}
@@ -996,6 +1174,7 @@ export default function VerPaciente() {
                 >
                   <ChevronsLeft className="w-4 h-4" />
                 </button>
+
                 <button
                   onClick={goPrev}
                   disabled={safePage === 1}
@@ -1004,10 +1183,12 @@ export default function VerPaciente() {
                 >
                   <ChevronLeft className="w-4 h-4" />
                 </button>
+
                 <span className="px-3 text-sm">
                   Página <span className="font-semibold">{safePage}</span> de{" "}
                   <span className="font-semibold">{totalPages}</span>
                 </span>
+
                 <button
                   onClick={goNext}
                   disabled={safePage === totalPages}
@@ -1016,6 +1197,7 @@ export default function VerPaciente() {
                 >
                   <ChevronRight className="w-4 h-4" />
                 </button>
+
                 <button
                   onClick={goLast}
                   disabled={safePage === totalPages}
@@ -1025,14 +1207,9 @@ export default function VerPaciente() {
                   <ChevronsRight className="w-4 h-4" />
                 </button>
               </div>
-
-              {/* Derecha: conteo en la página */}
-              <div className="text-sm text-gray-600 font-medium">
-                Mostrando {currentRows.length} de {PAGE_SIZE}
-              </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </SectionCard>
     </div>
   );

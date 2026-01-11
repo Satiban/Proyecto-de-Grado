@@ -16,6 +16,8 @@ import {
   Phone,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
+import { useConfig } from "../../hooks/useConfig";
+import { e164ToLocal } from "../../utils/phoneFormat";
 
 /* ===================== Tipos ===================== */
 type ProximaCita = {
@@ -27,7 +29,7 @@ type ProximaCita = {
     | "confirmada"
     | "cancelada"
     | "realizada"
-    | "reprogramacion"; // 👈 backend manda así
+    | "reprogramacion";
   motivo?: string | null;
   odontologo?: { id_odontologo: number; nombre: string } | null;
   consultorio?: {
@@ -51,10 +53,6 @@ type ResumenHistorial = {
 
 /* ===================== Config/Utils ===================== */
 const BRAND = "#0070B7";
-
-// Ventana para confirmar: entre 24h y 12h antes (inclusive)
-const CONFIRM_FROM_HOURS = 24;
-const CONFIRM_UNTIL_HOURS = 12;
 
 const capitalizeFirst = (s: string) =>
   s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
@@ -195,6 +193,8 @@ const BTN_CANCEL = "bg-red-600 hover:bg-red-700 disabled:opacity-70";
 const Inicio: React.FC = () => {
   const { usuario } = useAuth();
   const navigate = useNavigate();
+  const { config } = useConfig();
+  const celularLocal = e164ToLocal(config?.celular_contacto);
 
   const nombrePaciente = useMemo(() => {
     const n1 = usuario?.primer_nombre?.trim() ?? "";
@@ -250,16 +250,20 @@ const Inicio: React.FC = () => {
     return hoursUntil(parseDateTimeLocal(proxima.fecha, proxima.hora_inicio));
   }, [proxima?.fecha, proxima?.hora_inicio]);
 
+  const confirmFrom = config?.horas_confirmar_desde ?? 24;
+  const confirmUntil = config?.horas_confirmar_hasta ?? 12;
+
+  // Confirmación dentro de ventana dinámica
   const isWithinConfirmWindow =
     proxima &&
     proxima.estado === "pendiente" &&
     hoursToAppt !== null &&
-    hoursToAppt <= CONFIRM_FROM_HOURS &&
-    hoursToAppt >= CONFIRM_UNTIL_HOURS;
+    hoursToAppt <= confirmFrom &&
+    hoursToAppt >= confirmUntil;
 
-  // Reprogramar/Cancelar solo hasta 12h antes (>= 12h)
-  const canManageBefore12h =
-    hoursToAppt !== null && hoursToAppt >= CONFIRM_UNTIL_HOURS;
+  // Cancelar / Reprogramar solo hasta las horas configuradas
+  const canManageBeforeLimit =
+    hoursToAppt !== null && hoursToAppt >= confirmUntil;
 
   // Detectar si ya fue reprogramada al menos una vez (soporta campos nuevos y legacy)
   const alreadyRescheduled = useMemo(() => {
@@ -288,7 +292,7 @@ const Inicio: React.FC = () => {
     proxima.estado === "confirmada" ||
     proxima.estado === "cancelada" ||
     proxima.estado === "realizada" ||
-    !canManageBefore12h ||
+    !canManageBeforeLimit ||
     alreadyRescheduled;
 
   const cancelDisabled =
@@ -297,7 +301,7 @@ const Inicio: React.FC = () => {
     proxima.estado === "confirmada" ||
     proxima.estado === "cancelada" ||
     proxima.estado === "realizada" ||
-    !canManageBefore12h;
+    !canManageBeforeLimit;
 
   // Acciones
   async function doConfirm() {
@@ -352,7 +356,13 @@ const Inicio: React.FC = () => {
       {/* Saludo */}
       <div className="bg-white rounded-xl shadow-sm px-5 py-4 flex items-center justify-between">
         <h1 className="text-2xl sm:text-3xl font-bold">
-          ¡Bienvenida, <span style={{ color: BRAND }}>{nombrePaciente}</span>!{" "}
+          ¡
+          {usuario?.sexo?.toLowerCase() === "m"
+            ? "Bienvenido"
+            : usuario?.sexo?.toLowerCase() === "f"
+            ? "Bienvenida"
+            : "Bienvenid@"}
+          , <span style={{ color: BRAND }}>{nombrePaciente}</span>!{" "}
           <span className="ml-1">👋</span>
         </h1>
       </div>
@@ -440,27 +450,28 @@ const Inicio: React.FC = () => {
                         </div>
                       )}
 
-                      {/* Ayuda para la ventana de confirmación */}
+                      {/* dinámico: ventana de confirmación */}
                       {proxima.estado === "pendiente" && (
                         <div className="text-xs text-gray-600">
                           {isWithinConfirmWindow ? (
                             <>
                               Puedes confirmar tu asistencia ahora. La
                               confirmación está disponible desde{" "}
-                              {CONFIRM_FROM_HOURS} h hasta {CONFIRM_UNTIL_HOURS}{" "}
-                              h antes de la cita.
+                              <b>{confirmFrom} h</b> hasta{" "}
+                              <b>{confirmUntil} h</b> antes de la cita.
                             </>
                           ) : hoursToAppt !== null &&
-                            hoursToAppt > CONFIRM_FROM_HOURS ? (
+                            hoursToAppt > confirmFrom ? (
                             <>
-                              La confirmación se habilitará {CONFIRM_FROM_HOURS}{" "}
-                              h antes de la cita.
+                              La confirmación se habilitará{" "}
+                              <b>{confirmFrom} h</b> antes de la cita.
                             </>
                           ) : hoursToAppt !== null &&
-                            hoursToAppt < CONFIRM_UNTIL_HOURS ? (
+                            hoursToAppt < confirmUntil ? (
                             <>
                               La ventana de confirmación ha concluido. Para
-                              gestionar la cita, comunícate con el consultorio.
+                              gestionar la cita, comunícate con el consultorio
+                              al <b>{celularLocal || "09XXXXXXX"}</b>.
                             </>
                           ) : null}
                         </div>
@@ -468,46 +479,55 @@ const Inicio: React.FC = () => {
 
                       {/* Nota tras confirmar */}
                       {proxima.estado === "confirmada" && (
-                        <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
-                          <Phone size={14} className="mt-0.5" />
+                        <div className="flex items-start gap-2 text-xs text-green-800 bg-green-50 border border-green-200 rounded p-2">
+                          <Phone size={20} className="mt-0.5 text-green-700" />
                           <span>
-                            Si surge una emergencia y no puedes asistir,{" "}
-                            <b>llama al consultorio</b> para notificar y
-                            gestionar una cancelación o reprogramación.
+                            Esta cita está <b>confirmada</b>. Desde la
+                            aplicación no puedes <b>reprogramar</b> ni{" "}
+                            <b>cancelar</b>. Si surge una <b>emergencia</b> y
+                            necesitas gestionar la cita, por favor{" "}
+                            <b>
+                              llama al consultorio al{" "}
+                              {celularLocal || "09XXXXXXX"}
+                            </b>
+                            .
                           </span>
                         </div>
                       )}
 
-                      {/* NUEVO: Nota cuando está en reprogramación */}
+                      {/* Nota cuando está en reprogramación */}
                       {proxima.estado === "reprogramacion" && (
                         <div className="flex items-start gap-2 text-xs text-purple-700 bg-purple-50 border border-purple-200 rounded p-2">
                           <Info size={14} className="mt-0.5" />
                           <span>
                             Esta cita se encuentra actualmente en{" "}
                             <b>reprogramación</b> por parte del consultorio.
-                            Este estado es <b>temporal</b> mientras el
-                            consultorio ajusta su agenda. Se te notificará si
-                            existe algún cambio. Para más información, por favor{" "}
-                            <b>comunícate con el consultorio</b>.
+                            Este estado es <b>temporal</b> mientras se ajusta la
+                            agenda. Para más información, por favor{" "}
+                            <b>
+                              comunícate con el consultorio al{" "}
+                              {celularLocal || "09XXXXXXX"}
+                            </b>
+                            .
                           </span>
                         </div>
                       )}
 
                       {/* Si ya no se puede reprogramar/cancelar por tiempo */}
                       {proxima.estado === "pendiente" &&
-                        !canManageBefore12h && (
+                        !canManageBeforeLimit && (
                           <div className="text-xs text-gray-600">
                             Reprogramar y cancelar están disponibles solo hasta{" "}
-                            <b>{CONFIRM_UNTIL_HOURS} h</b> antes de la cita. Si
-                            falta menos, por favor <b>llama al consultorio</b>.
+                            <b>{confirmUntil} h</b> antes de la cita.
                           </div>
                         )}
 
                       {/* Mensaje si ya fue reprogramada */}
                       {alreadyRescheduled && (
                         <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
-                          Esta cita ya fue <b>reprogramada una vez</b>. Si desea
-                          volver a reprogramar, contacte al consultorio.
+                          Esta cita ya fue <b>reprogramada una vez</b>. Si
+                          deseas reprogramarla nuevamente, por favor comunícate
+                          al <b>{celularLocal || "09XXXXXXX"}</b>.
                         </div>
                       )}
                     </div>
@@ -668,25 +688,40 @@ const Inicio: React.FC = () => {
         onClose={() => setCancelModalOpen(false)}
         confirming={submitting === "cancelar"}
       >
-        <div className="space-y-2">
+        <div className="space-y-3 text-sm text-gray-700">
           <p>
-            ¿Deseas <b>cancelar</b> esta cita?
+            ¿Estás seguro de que deseas <b>cancelar esta cita</b>?
           </p>
-          <ul className="list-disc pl-5 text-sm text-gray-700 space-y-1">
+
+          <ul className="list-disc pl-5 space-y-1">
             <li>
-              Te recomendamos <b>reprogramar</b> de preferencia. Solo se permite
-              reprogramar <b>una vez</b>.
+              Te recomendamos <b>reprogramar</b> en lugar de cancelar. El
+              sistema permite reprogramar hasta{" "}
+              <b>{config?.max_reprogramaciones ?? 1} vez(es)</b>.
             </li>
+
             <li>
-              Si cancelas, no podrás volver a agendar con este odontólogo
-              durante <b>7 días</b> (salvo que el consultorio lo gestione por
-              ti).
+              Si cancelas, se aplicará una <b>penalización automática</b> y no
+              podrás agendar nuevamente con este odontólogo durante{" "}
+              <b>{config?.cooldown_dias ?? 7} día(s)</b>. Esta restricción{" "}
+              <b>solo aplica con este odontólogo</b>; podrás agendar normalmente
+              con otros especialistas.
             </li>
+
             <li>
-              Si necesitas una <b>cita de emergencia</b>, por favor{" "}
-              <b>llama al consultorio</b>.
+              La penalización se levanta automáticamente después del periodo
+              indicado.
+            </li>
+
+            <li>
+              Si necesitas una <b>cita urgente</b> o gestión especial, llama al
+              consultorio: <b>{celularLocal || "09XXXXXXX"}</b>.
             </li>
           </ul>
+
+          <p className="text-xs text-gray-500">
+            Esta acción no se puede deshacer desde la aplicación.
+          </p>
         </div>
       </Modal>
     </div>

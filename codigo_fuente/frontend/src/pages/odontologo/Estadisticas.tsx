@@ -7,6 +7,7 @@ import {
   BarChart3,
   LineChart,
   PieChart,
+  Eraser
 } from "lucide-react";
 import {
   LineChart as RLineChart,
@@ -177,7 +178,11 @@ const Estadisticas = () => {
     );
     const arr = [
       { name: "Realizada", value: k.realizadas ?? 0, color: COLORS.realizada },
-      { name: "Confirmada", value: k.confirmadas ?? 0, color: COLORS.confirmada },
+      {
+        name: "Confirmada",
+        value: k.confirmadas ?? 0,
+        color: COLORS.confirmada,
+      },
       { name: "Pendiente", value: pendiente, color: COLORS.pendiente },
       { name: "Cancelada", value: k.canceladas ?? 0, color: COLORS.cancelada },
     ];
@@ -197,15 +202,18 @@ const Estadisticas = () => {
         <div className="flex gap-2 print:hidden" />
       </div>
 
-      {/* Filtros (sin odontólogo ni especialidad) */}
+      {/* Filtros */}
       <div className="rounded-xl bg-white shadow-md p-4 print:hidden">
         <div className="flex items-center gap-2 mb-4 text-gray-600">
           <Filter size={16} /> Filtros
         </div>
+
         <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
-          <div>
-            <label className="text-sm text-gray-600 flex items-center gap-1">
-              <CalendarDays size={14} /> Desde
+          {/* Desde */}
+          <div className="flex flex-col justify-end">
+            <label className="text-sm text-gray-600 flex items-center gap-1 leading-none mb-1">
+              <CalendarDays size={14} className="shrink-0" />
+              <span>Desde</span>
             </label>
             <input
               type="date"
@@ -213,22 +221,31 @@ const Estadisticas = () => {
               onChange={(e) =>
                 setFiltros((s) => ({ ...s, desde: e.target.value }))
               }
-              className="mt-1 w-full border rounded-lg px-3 py-2"
+              className="w-full border rounded-lg px-3 py-2"
             />
           </div>
-          <div>
-            <label className="text-sm text-gray-600">Hasta</label>
+
+          {/* Hasta */}
+          <div className="flex flex-col justify-end">
+            <label className="text-sm text-gray-600 flex items-center gap-1 leading-none mb-1">
+              <CalendarDays size={14} className="shrink-0" />
+              <span>Hasta</span>
+            </label>
             <input
               type="date"
               value={filtros.hasta}
               onChange={(e) =>
                 setFiltros((s) => ({ ...s, hasta: e.target.value }))
               }
-              className="mt-1 w-full border rounded-lg px-3 py-2"
+              className="w-full border rounded-lg px-3 py-2"
             />
           </div>
-          <div>
-            <label className="text-sm text-gray-600">Consultorio</label>
+
+          {/* Consultorio */}
+          <div className="flex flex-col justify-end">
+            <label className="text-sm text-gray-600 leading-none mb-1">
+              Consultorio
+            </label>
             <select
               value={filtros.consultorio ?? ""}
               onChange={(e) =>
@@ -237,7 +254,7 @@ const Estadisticas = () => {
                   consultorio: e.target.value ? Number(e.target.value) : "",
                 }))
               }
-              className="mt-1 w-full border rounded-lg px-3 py-2"
+              className="w-full border rounded-lg px-3 py-2"
             >
               <option value="">Todos</option>
               {consultorios.map((c) => (
@@ -247,14 +264,18 @@ const Estadisticas = () => {
               ))}
             </select>
           </div>
-          <div>
-            <label className="text-sm text-gray-600">Estado</label>
+
+          {/* Estado */}
+          <div className="flex flex-col justify-end">
+            <label className="text-sm text-gray-600 leading-none mb-1">
+              Estado
+            </label>
             <select
               value={filtros.estado ?? ""}
               onChange={(e) =>
                 setFiltros((s) => ({ ...s, estado: e.target.value as any }))
               }
-              className="mt-1 w-full border rounded-lg px-3 py-2"
+              className="w-full border rounded-lg px-3 py-2"
             >
               <option value="">Todos</option>
               <option value="pendiente">Pendiente</option>
@@ -263,15 +284,40 @@ const Estadisticas = () => {
               <option value="realizada">Realizada</option>
             </select>
           </div>
-          <div className="flex items-end">
+
+          {/* Botones */}
+          <div className="flex items-end justify-end gap-2">
+            <button
+              onClick={() => {
+                const hoyISO = toLocalISO(new Date());
+                setFiltros({
+                  desde: hoyISO,
+                  hasta: hoyISO,
+                  consultorio: "",
+                  estado: "",
+                });
+              }}
+              className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm bg-white hover:bg-gray-50 transition-colors"
+              title="Limpiar filtros"
+            >
+              <Filter className="hidden" />
+              <span className="flex items-center gap-2">
+                <Eraser className="w-4 h-4" />
+                Limpiar
+              </span>
+            </button>
+
             <button
               onClick={fetchData}
-              className="w-full px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+              className="inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 transition-colors"
+              title="Aplicar filtros"
             >
+              <Filter className="w-4 h-4" />
               Aplicar filtros
             </button>
           </div>
         </div>
+
         {err && <p className="text-red-600 mt-3">{err}</p>}
       </div>
 
@@ -337,8 +383,14 @@ const Estadisticas = () => {
         </ChartCard>
 
         {/* Pie de ESTADOS */}
-        <ChartCard title="Distribución por estado" icon={<PieChart size={16} />}>
-          <div className="flex items-start gap-6 w-full" style={{ minHeight: 260 }}>
+        <ChartCard
+          title="Distribución por estado"
+          icon={<PieChart size={16} />}
+        >
+          <div
+            className="flex items-start gap-6 w-full"
+            style={{ minHeight: 260 }}
+          >
             <div style={{ width: 220, overflow: "visible" }}>
               <ul className="space-y-2 text-sm">
                 {pieEstadosData.length ? (
@@ -384,7 +436,10 @@ const Estadisticas = () => {
                     labelLine={false}
                   >
                     {pieEstadosData.map((d, i) => (
-                      <Cell key={i} fill={d.color ?? PIE_COLORS[i % PIE_COLORS.length]} />
+                      <Cell
+                        key={i}
+                        fill={d.color ?? PIE_COLORS[i % PIE_COLORS.length]}
+                      />
                     ))}
                   </Pie>
                 </RPieChart>
@@ -409,41 +464,42 @@ const Estadisticas = () => {
         </ChartCard>
       </div>
 
-      {/* Top pacientes (Top 10) en la vista */}
-      <div className="rounded-xl bg-white shadow-md p-4">
-        <h3 className="font-semibold mb-3">Top pacientes (Top 10)</h3>
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead>
-              <tr className="text-left border-b">
-                <th className="py-2">Paciente</th>
-                <th className="py-2">Cédula</th>
-                <th className="py-2">Citas</th>
+      {/* Top pacientes (Top 10) */}
+      <div className="rounded-xl bg-white shadow-md overflow-hidden">
+        <table className="min-w-full text-sm">
+          <thead className="bg-gray-100 text-black font-bold border-b border-black">
+            <tr>
+              <th className="px-4 py-3 text-left font-medium">#</th>
+              <th className="px-4 py-3 text-left font-medium">Paciente</th>
+              <th className="px-4 py-3 text-left font-medium">Cédula</th>
+              <th className="px-4 py-3 text-left font-medium">Citas</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-200">
+            {(data?.tablas.top_pacientes ?? []).slice(0, 10).map((r, i) => (
+              <tr key={i} className="hover:bg-gray-50">
+                <td className="px-4 py-3 font-medium text-gray-700">{i + 1}</td>
+                <td className="px-4 py-3">{r.paciente || "—"}</td>
+                <td className="px-4 py-3">{r.cedula || "—"}</td>
+                <td className="px-4 py-3">{r.citas ?? "—"}</td>
               </tr>
-            </thead>
-            <tbody>
-              {(data?.tablas.top_pacientes ?? []).slice(0, 10).map((r, i) => (
-                <tr key={i} className="border-b last:border-0">
-                  <td className="py-2">{r.paciente}</td>
-                  <td className="py-2">{r.cedula}</td>
-                  <td className="py-2">{r.citas}</td>
-                </tr>
-              ))}
-              {!(data?.tablas.top_pacientes ?? []).length && (
-                <tr>
-                  <td className="py-2 text-gray-500" colSpan={3}>
-                    Sin datos
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+            ))}
+            {!(data?.tablas.top_pacientes ?? []).length && (
+              <tr>
+                <td className="px-4 py-3 text-gray-500 text-center" colSpan={4}>
+                  Sin datos disponibles
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
       </div>
 
       {loading && (
         <div className="fixed inset-0 bg-black/10 flex items-center justify-center print:hidden">
-          <div className="rounded-xl bg-white px-6 py-4 shadow">Procesando…</div>
+          <div className="rounded-xl bg-white px-6 py-4 shadow">
+            Procesando…
+          </div>
         </div>
       )}
     </div>

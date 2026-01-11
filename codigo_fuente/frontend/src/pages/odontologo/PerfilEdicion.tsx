@@ -4,6 +4,8 @@ import { useNavigate } from "react-router-dom";
 import { api } from "../../api/axios";
 import { useAuth } from "../../context/AuthContext";
 import { Eye, EyeOff } from "lucide-react";
+import { e164ToLocal, localToE164 } from "../../utils/phoneFormat";
+import { useFotoPerfil } from "../../hooks/useFotoPerfil";
 
 /* ===== Tipos ===== */
 type Odontologo = {
@@ -54,7 +56,6 @@ const DIAS_LABEL: Record<number, string> = {
   5: "Sáb",
   6: "Dom",
 };
-const DAY_ORDER = [0, 1, 2, 3, 4, 5, 6] as const;
 const TIPOS_SANGRE = [
   "O+",
   "O-",
@@ -167,6 +168,8 @@ function ToastView({
 export default function PerfilEdicion() {
   const navigate = useNavigate();
   const { usuario } = useAuth();
+  const idUsuario = usuario?.id_usuario;
+  const { subirFoto, eliminarFoto } = useFotoPerfil();
 
   // ID del odontólogo desde el usuario autenticado
   const odontologoId = useMemo<number | null>(() => {
@@ -192,9 +195,7 @@ export default function PerfilEdicion() {
   const [showPass, setShowPass] = useState(false);
   const [showPass2, setShowPass2] = useState(false);
 
-  const [especialidadesOpts, setEspecialidadesOpts] = useState<
-    EspecialidadOption[]
-  >([]);
+  const [, setEspecialidadesOpts] = useState<EspecialidadOption[]>([]);
   const [horarios, setHorarios] = useState<HorarioForm[]>(
     Array.from({ length: 7 }).map((_, i) => ({
       dia_semana: i,
@@ -323,7 +324,7 @@ export default function PerfilEdicion() {
             sexo: normSexo(data.sexo),
             fecha_nacimiento: data.fecha_nacimiento ?? "",
             tipo_sangre: (data.tipo_sangre ?? "").toString(),
-            celular: (data.celular ?? "").toString(),
+            celular: e164ToLocal(data.celular) ?? "",
             usuario_email: (data.usuario_email ?? "").toString(),
             password: "",
             password_confirm: "",
@@ -397,58 +398,6 @@ export default function PerfilEdicion() {
     if (k === "celular") setCelularExists(null);
     setForm((s) => ({ ...s, [k]: v as any }));
   };
-
-  const onHorarioToggle = (dia: number, enabled: boolean) => {
-    setHorarios((arr) =>
-      arr.map((h) =>
-        h.dia_semana === dia
-          ? {
-              ...h,
-              habilitado: enabled,
-              ...(enabled
-                ? {
-                    hora_inicio: h.hora_inicio || "09:00",
-                    hora_fin: h.hora_fin || "22:00",
-                  }
-                : { hora_inicio: "", hora_fin: "" }),
-            }
-          : h
-      )
-    );
-  };
-  const onHorarioHora = (
-    dia: number,
-    campo: "hora_inicio" | "hora_fin",
-    value: string
-  ) => {
-    setHorarios((arr) =>
-      arr.map((h) => (h.dia_semana === dia ? { ...h, [campo]: value } : h))
-    );
-  };
-
-  // especialidades
-  const addEspecialidad = () => {
-    setErrors((e) => ({ ...e, especialidades: "" }));
-    setForm((s) => ({
-      ...s,
-      especialidades_detalle: [
-        ...s.especialidades_detalle,
-        { nombre: null, universidad: "", estado: true },
-      ],
-    }));
-  };
-  const removeEsp = (idx: number) =>
-    setForm((s) => {
-      const arr = [...s.especialidades_detalle];
-      arr.splice(idx, 1);
-      return { ...s, especialidades_detalle: arr };
-    });
-  const changeEspNombre = (idx: number, nombre: string) =>
-    setForm((s) => {
-      const arr = [...s.especialidades_detalle];
-      arr[idx] = { ...arr[idx], nombre };
-      return { ...s, especialidades_detalle: arr };
-    });
 
   /* Verificación remota */
   const verificarUnico = async ({
@@ -607,8 +556,8 @@ export default function PerfilEdicion() {
         newErrors.password = "Obligatoria si cambias la contraseña.";
       if (!form.password_confirm.trim())
         newErrors.password_confirm = "Obligatoria si cambias la contraseña.";
-      if (form.password.trim() && form.password.trim().length < 6)
-        newErrors.password = "Mínimo 6 caracteres.";
+      if (form.password.trim() && form.password.trim().length < 8)
+        newErrors.password = "Mínimo 8 caracteres.";
       if (
         form.password &&
         form.password_confirm &&
@@ -694,7 +643,7 @@ export default function PerfilEdicion() {
       fd.append("sexo", form.sexo || "");
       fd.append("fecha_nacimiento", form.fecha_nacimiento || "");
       fd.append("tipo_sangre", form.tipo_sangre || "");
-      fd.append("celular", form.celular || "");
+      fd.append("celular", localToE164(form.celular) || "");
       fd.append("usuario_email", form.usuario_email || "");
       if (form.password.trim()) fd.append("password", form.password.trim());
       fd.append(
@@ -702,19 +651,27 @@ export default function PerfilEdicion() {
         JSON.stringify(form.especialidades_detalle || [])
       );
       fd.append("horarios", JSON.stringify(horariosPayload));
-      if (fotoFile) fd.append("foto", fotoFile);
-      if (fotoRemove && !fotoFile) fd.append("foto_remove", "true");
-
+      // 1. Guardar datos del odontólogo
       await api.patch(`/odontologos/${odo.id_odontologo}/`, fd, {
         headers: { "Content-Type": "multipart/form-data" },
       });
 
-      pushToast("Cambios guardados correctamente ✅", "success");
+      // 2. Subir foto nueva
+      if (idUsuario && fotoFile) {
+        await subirFoto(idUsuario, fotoFile);
+      }
+
+      // 3. Eliminar foto actual
+      if (idUsuario && fotoRemove && !fotoFile) {
+        await eliminarFoto(idUsuario);
+      }
+
+      pushToast("Cambios guardados correctamente", "success");
       setTimeout(() => navigate("/odontologo/perfil"), 600);
     } catch (e) {
       console.error(e);
       setError("No se pudo guardar la edición. Revisa los campos.");
-      pushToast("Error al guardar ❌", "error");
+      pushToast("Error al guardar", "error");
     } finally {
       setSaving(false);
     }
@@ -736,7 +693,6 @@ export default function PerfilEdicion() {
     }`;
 
   const displayedPhoto = fotoPreview ?? (fotoRemove ? null : odo?.foto ?? null);
-  const horariosView = DAY_ORDER.map((idx) => horarios[idx]);
 
   return (
     <div className="space-y-6 w-full">
@@ -759,7 +715,7 @@ export default function PerfilEdicion() {
 
           <button
             type="submit"
-            form="pac-edit-form"
+            form="perfil-form"
             className="inline-flex items-center gap-2 rounded-lg bg-gray-800 text-white px-4 py-2 shadow hover:bg-black/80 disabled:opacity-50"
             disabled={saving || loading}
             title="Guardar cambios"
@@ -775,7 +731,11 @@ export default function PerfilEdicion() {
         </div>
       )}
 
-      <form onSubmit={onSave} className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <form
+        id="perfil-form"
+        onSubmit={onSave}
+        className="grid grid-cols-1 lg:grid-cols-2 gap-6"
+      >
         {/* Columna izquierda */}
         <div className="space-y-6">
           {/* Foto */}
@@ -1047,6 +1007,64 @@ export default function PerfilEdicion() {
                 {errors.password && (
                   <p className="mt-1 text-xs text-red-600">{errors.password}</p>
                 )}
+
+                {/* Indicadores de validación de contraseña */}
+                <div className="mt-2 space-y-1 text-xs">
+                  <p
+                    className={`${
+                      form.password.length === 0
+                        ? "text-gray-500"
+                        : form.password.length >= 8
+                        ? "text-green-600"
+                        : "text-red-600"
+                    }`}
+                  >
+                    {form.password.length === 0
+                      ? "• Mínimo 8 caracteres"
+                      : form.password.length >= 8
+                      ? "✓ Mínimo 8 caracteres"
+                      : "✗ Mínimo 8 caracteres"}
+                  </p>
+                  <p
+                    className={`${
+                      form.password.length === 0
+                        ? "text-gray-500"
+                        : /[A-Z]/.test(form.password)
+                        ? "text-green-600"
+                        : "text-red-600"
+                    }`}
+                  >
+                    {form.password.length === 0
+                      ? "• Al menos una letra mayúscula"
+                      : /[A-Z]/.test(form.password)
+                      ? "✓ Al menos una letra mayúscula"
+                      : "✗ Al menos una letra mayúscula"}
+                  </p>
+                  <p
+                    className={`${
+                      form.password.length === 0
+                        ? "text-gray-500"
+                        : /\d/.test(form.password)
+                        ? "text-green-600"
+                        : "text-red-600"
+                    }`}
+                  >
+                    {form.password.length === 0
+                      ? "• Al menos un número"
+                      : /\d/.test(form.password)
+                      ? "✓ Al menos un número"
+                      : "✗ Al menos un número"}
+                  </p>
+                  <p className="text-gray-600 mt-1">
+                    {form.password.length === 0
+                      ? "Estado general: Sin cambios"
+                      : form.password.length >= 8 &&
+                        /[A-Z]/.test(form.password) &&
+                        /\d/.test(form.password)
+                      ? "Estado general: Contraseña válida"
+                      : "Estado general: Contraseña no válida"}
+                  </p>
+                </div>
               </div>
 
               <div className="relative">
@@ -1078,6 +1096,27 @@ export default function PerfilEdicion() {
                     {errors.password_confirm}
                   </p>
                 )}
+
+                {/* Indicador de coincidencia de contraseñas */}
+                <div className="mt-2 text-xs">
+                  <p
+                    className={`${
+                      form.password_confirm.length === 0
+                        ? "text-gray-500"
+                        : form.password === form.password_confirm &&
+                          form.password.length > 0
+                        ? "text-green-600"
+                        : "text-red-600"
+                    }`}
+                  >
+                    {form.password_confirm.length === 0
+                      ? "Las contraseñas deben coincidir"
+                      : form.password === form.password_confirm &&
+                        form.password.length > 0
+                      ? "✓ Las contraseñas coinciden"
+                      : "✗ Las contraseñas no coinciden"}
+                  </p>
+                </div>
               </div>
             </div>
           </div>
@@ -1086,75 +1125,53 @@ export default function PerfilEdicion() {
         {/* Columna derecha: Horario + Formación */}
         <div className="space-y-6">
           {/* Horario semanal */}
-          <div className="rounded-2xl p-4 shadow-md bg-white">
-            <h3 className="text-lg font-bold text-gray-900">Horario semanal</h3>
-            <p className="text-xs text-gray-600 mb-2 mt-1">
-              Horario laboral: 09:00–22:00.{" "}
-              <strong>No se atiende de 13:00 a 15:00</strong> (almuerzo).
+          <div className="rounded-2xl p-4 shadow-md bg-gray-100 opacity-75 cursor-not-allowed">
+            <h3 className="text-lg font-bold text-gray-800 flex items-center justify-between">
+              Horario semanal
+            </h3>
+            <p className="text-sm text-gray-700 mt-2">
+              🔒 Esta información es sensible. Para modificar su horario de
+              atención, comuníquese con el administrador del sistema.
             </p>
 
-            {errors.horarios && (
-              <p className="text-xs text-red-600 mb-2">{errors.horarios}</p>
-            )}
-
-            <div className="space-y-2">
-              {horariosView.map((h) => (
+            <div className="mt-3 space-y-2">
+              {horarios.map((h) => (
                 <div
                   key={h.dia_semana}
-                  className={`grid grid-cols-1 sm:grid-cols-12 gap-2 rounded-lg border px-3 py-2 ${
-                    errors.horarios ? "border-red-500" : ""
-                  }`}
+                  className="grid grid-cols-1 sm:grid-cols-12 gap-2 rounded-lg border px-3 py-2 bg-white/70"
                 >
                   <div className="sm:col-span-3 flex items-center">
-                    <span className="text-sm">{DIAS_LABEL[h.dia_semana]}</span>
+                    <span className="text-sm font-medium text-gray-700">
+                      {DIAS_LABEL[h.dia_semana]}
+                    </span>
                   </div>
-                  <div className="sm:col-span-3">
-                    <label className="inline-flex items-center gap-2 text-sm w-full">
-                      <input
-                        type="checkbox"
-                        checked={h.habilitado}
-                        onChange={(e) =>
-                          onHorarioToggle(h.dia_semana, e.target.checked)
-                        }
-                        className="h-4 w-4 shrink-0"
-                      />
-                      <span className="truncate">Habilitar</span>
-                    </label>
+
+                  <div className="sm:col-span-3 flex items-center">
+                    <input
+                      type="checkbox"
+                      checked={h.habilitado}
+                      disabled
+                      className="h-4 w-4"
+                    />
+                    <span className="ml-2 text-sm text-gray-700">
+                      {h.habilitado ? "Habilitado" : "No habilitado"}
+                    </span>
                   </div>
+
                   <div className="sm:col-span-3">
                     <input
                       type="time"
-                      value={h.hora_inicio}
-                      onChange={(e) =>
-                        onHorarioHora(
-                          h.dia_semana,
-                          "hora_inicio",
-                          e.target.value
-                        )
-                      }
-                      className={`w-full min-w-0 rounded-lg border px-2 py-1 text-sm ${
-                        errors.horarios ? "border-red-500" : "border-gray-300"
-                      }`}
-                      disabled={!h.habilitado}
-                      step="60"
-                      min="09:00"
-                      max="22:00"
+                      value={h.hora_inicio || ""}
+                      disabled
+                      className="w-full rounded-lg border px-2 py-1 text-sm border-gray-300 bg-gray-50 text-gray-700"
                     />
                   </div>
                   <div className="sm:col-span-3">
                     <input
                       type="time"
-                      value={h.hora_fin}
-                      onChange={(e) =>
-                        onHorarioHora(h.dia_semana, "hora_fin", e.target.value)
-                      }
-                      className={`w-full min-w-0 rounded-lg border px-2 py-1 text-sm ${
-                        errors.horarios ? "border-red-500" : "border-gray-300"
-                      }`}
-                      disabled={!h.habilitado}
-                      step="60"
-                      min="09:00"
-                      max="22:00"
+                      value={h.hora_fin || ""}
+                      disabled
+                      className="w-full rounded-lg border px-2 py-1 text-sm border-gray-300 bg-gray-50 text-gray-700"
                     />
                   </div>
                 </div>
@@ -1163,125 +1180,70 @@ export default function PerfilEdicion() {
           </div>
 
           {/* Formación profesional */}
-          <div className="rounded-2xl p-4 shadow-md bg-white">
-            <div className="flex items-center justify-between gap-2">
-              <h3 className="text-lg font-bold text-gray-900">
+          <div className="rounded-2xl p-4 shadow-md bg-gray-100 opacity-75 cursor-not-allowed">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-gray-800">
                 Formación profesional
               </h3>
-              <button
-                type="button"
-                onClick={addEspecialidad}
-                className="rounded-lg border px-3 py-1.5 text-sm hover:bg-gray-50"
-              >
-                Añadir especialidad
-              </button>
             </div>
 
-            <div className="mt-3 space-y-3">
-              {form.especialidades_detalle.length === 0 && (
+            <p className="text-sm text-gray-700 mt-2 mb-3">
+              🔒 Esta información es gestionada por el administrador. Si
+              necesita actualizar sus especialidades o universidad, comuníquese
+              con el área administrativa.
+            </p>
+
+            <div className="space-y-3">
+              {form.especialidades_detalle.length === 0 ? (
                 <p className="text-sm text-gray-600">
                   Sin especialidades registradas.
                 </p>
-              )}
+              ) : (
+                form.especialidades_detalle.map((esp, idx) => (
+                  <div
+                    key={idx}
+                    className="grid grid-cols-6 gap-3 items-center bg-white/70 border rounded-lg p-3"
+                  >
+                    <div className="col-span-6 sm:col-span-3">
+                      <label className="block text-xs text-gray-600 mb-1">
+                        Especialidad
+                      </label>
+                      <input
+                        value={esp.nombre ?? ""}
+                        disabled
+                        className="w-full rounded-lg border px-2 py-2 text-sm bg-gray-50 text-gray-700"
+                      />
+                    </div>
 
-              {errors.especialidades && (
-                <p className="text-xs text-red-600">{errors.especialidades}</p>
-              )}
-              {errors.especialidades_universidad && (
-                <p className="text-xs text-red-600">
-                  {errors.especialidades_universidad}
-                </p>
-              )}
-              {errors.especialidades_estado && (
-                <p className="text-xs text-red-600">
-                  {errors.especialidades_estado}
-                </p>
-              )}
+                    <div className="col-span-6 sm:col-span-2">
+                      <label className="block text-xs text-gray-600 mb-1">
+                        Universidad
+                      </label>
+                      <input
+                        value={esp.universidad ?? ""}
+                        disabled
+                        className="w-full rounded-lg border px-2 py-2 text-sm bg-gray-50 text-gray-700"
+                      />
+                    </div>
 
-              {form.especialidades_detalle.map((esp, idx) => (
-                <div key={idx} className="grid grid-cols-6 gap-2 items-start">
-                  <div className="col-span-6 sm:col-span-3">
-                    <label className="block text-xs text-gray-600">
-                      Especialidad
-                    </label>
-                    <select
-                      value={esp.nombre ?? ""}
-                      onChange={(e) => changeEspNombre(idx, e.target.value)}
-                      className={`w-full min-w-0 rounded-lg border px-2 py-2 text-sm ${
-                        errors.especialidades
-                          ? "border-red-500 focus:ring-2 focus:ring-red-500"
-                          : "border-gray-300"
-                      }`}
-                    >
-                      <option value="">— Selecciona —</option>
-                      {especialidadesOpts.map((opt) => (
-                        <option key={opt.id_especialidad} value={opt.nombre}>
-                          {opt.nombre}
-                        </option>
-                      ))}
-                    </select>
-
-                    <button
-                      type="button"
-                      onClick={() => removeEsp(idx)}
-                      className="mt-2 rounded-lg border px-3 py-1.5 text-sm hover:bg-gray-50"
-                    >
-                      Quitar
-                    </button>
-                  </div>
-
-                  <div className="col-span-6 sm:col-span-2">
-                    <label className="block text-xs text-gray-600">
-                      Universidad
-                    </label>
-                    <input
-                      value={esp.universidad ?? ""}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setForm((s) => {
-                          const arr = [...s.especialidades_detalle];
-                          arr[idx] = { ...arr[idx], universidad: v };
-                          return { ...s, especialidades_detalle: arr };
-                        });
-                      }}
-                      className={`w-full min-w-0 rounded-lg border px-2 py-2 text-sm ${
-                        errors.especialidades_universidad
-                          ? "border-red-500 focus:ring-2 focus:ring-red-500"
-                          : "border-gray-300"
-                      }`}
-                    />
-                  </div>
-
-                  <div className="col-span-6 sm:col-span-1">
-                    <label className="block text-xs invisible select-none">
-                      Estado
-                    </label>
-                    <div className="flex items-center">
+                    <div className="col-span-6 sm:col-span-1 flex items-center justify-start gap-2">
                       <input
                         type="checkbox"
                         checked={!!esp.estado}
-                        onChange={(e) => {
-                          const checked = e.target.checked;
-                          setForm((s) => {
-                            const arr = [...s.especialidades_detalle];
-                            arr[idx] = { ...arr[idx], estado: checked };
-                            return { ...s, especialidades_detalle: arr };
-                          });
-                        }}
+                        disabled
                         className="h-4 w-4"
                       />
                       <span
-                        className={`ml-2 text-xs leading-5 whitespace-nowrap ${
+                        className={`text-xs ${
                           esp.estado ? "text-green-700" : "text-gray-700"
                         }`}
-                        style={{ minWidth: 72 }}
                       >
                         {esp.estado ? "Atiende" : "No atiende"}
                       </span>
                     </div>
                   </div>
-                </div>
-              ))}
+                ))
+              )}
             </div>
           </div>
         </div>

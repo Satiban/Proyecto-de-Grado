@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../../api/axios";
 import { Pencil, Loader2, UserCircle2, ArrowLeft } from "lucide-react";
+import { e164ToLocal } from "../../utils/phoneFormat";
 
 type RolLite = { id_rol: number; rol?: string } | number | null | undefined;
 
@@ -83,6 +84,10 @@ export default function AdminPerfil() {
   const [u, setU] = useState<UsuarioView | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  
+  // Estado para verificar si tiene datos de paciente
+  const [tieneDatosPaciente, setTieneDatosPaciente] = useState<boolean | null>(null);
+  const [checkingPaciente, setCheckingPaciente] = useState(false);
 
   const nombreCompleto = useMemo(() => {
     if (!u) return "";
@@ -103,6 +108,18 @@ export default function AdminPerfil() {
       try {
         const { data } = await api.get(`/usuarios/${id}/`);
         setU(data);
+        
+        // Verificar si tiene datos de paciente
+        setCheckingPaciente(true);
+        try {
+          const verifyRes = await api.get(`/usuarios/${id}/verificar-rol-paciente/`);
+          setTieneDatosPaciente(verifyRes.data?.existe === true);
+        } catch (err) {
+          console.error("Error al verificar rol paciente:", err);
+          setTieneDatosPaciente(null);
+        } finally {
+          setCheckingPaciente(false);
+        }
       } catch (err: any) {
         const detail =
           err?.response?.data?.detail ||
@@ -146,10 +163,24 @@ export default function AdminPerfil() {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold flex items-center gap-2">
-          <UserCircle2 className="size-6 text-blue-600" />
-          Perfil del Administrador
-        </h1>
+        <div>
+          <h1 className="text-2xl font-semibold flex items-center gap-2">
+            <UserCircle2 className="size-6 text-blue-600" />
+            Perfil del Administrador
+          </h1>
+          {/* Indicador de datos de paciente */}
+          {checkingPaciente && (
+            <p className="text-xs text-gray-500 mt-1 flex items-center gap-1">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Verificando datos de paciente...
+            </p>
+          )}
+          {tieneDatosPaciente === true && (
+            <p className="text-xs text-green-600 mt-1">
+              ✓ Ya tiene datos de paciente registrados
+            </p>
+          )}
+        </div>
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -232,7 +263,7 @@ export default function AdminPerfil() {
         </div>
         <div>
           <p className="text-sm text-gray-500">Celular</p>
-          <p className="font-medium">{u.celular || "—"}</p>
+          <p className="font-medium">{e164ToLocal(u.celular) || "—"}</p>
         </div>
       </div>
 

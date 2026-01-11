@@ -8,6 +8,9 @@ import {
   LineChart,
   PieChart,
   Printer,
+  Eraser,
+  Banknote,
+  TrendingUp,
 } from "lucide-react";
 import {
   LineChart as RLineChart,
@@ -27,7 +30,7 @@ import {
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import html2canvas from "html2canvas";
-import logoUrl from "../../assets/oralflow-logo.png";
+import logoUrl from "../../assets/belladent-logo.png";
 import { useAuth } from "../../context/AuthContext";
 
 /* ===================== Colores ===================== */
@@ -66,6 +69,15 @@ type OverviewResponse = {
     canceladas: number;
     asistencia_pct: number;
   };
+  kpis_pagos: {
+    total_recaudado: number;
+    total_reembolsado: number;
+    ingreso_neto: number;
+    pagos_completados: number;
+    pagos_pendientes: number;
+    cantidad_reembolsos: number;
+    tasa_pago: number;
+  };
   series: {
     por_dia: { fecha: string; total: number }[];
     por_semana_estado: {
@@ -77,6 +89,10 @@ type OverviewResponse = {
     }[];
     por_especialidad: { especialidad: string; total: number }[];
     por_hora: { hora: string; total: number }[];
+    ingresos_por_dia: { fecha: string; monto: number }[];
+    por_metodo_pago: { metodo: string; total: number; monto: number }[];
+    citas_vs_pagos: { fecha: string; citas_realizadas: number; pagadas: number; pendientes: number }[];
+    ingresos_por_semana: { semana: string; monto: number }[];
   };
   tablas: {
     top_pacientes: { paciente: string; cedula: string; citas: number }[];
@@ -140,17 +156,23 @@ const Reportes = () => {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // Refs de CARDS (contenedor)
+  // Refs de CARDS (contenedor) - Citas
   const chartDiaRef = useRef<HTMLDivElement | null>(null);
   const chartSemanaRef = useRef<HTMLDivElement | null>(null);
   const chartEspecialidadRef = useRef<HTMLDivElement | null>(null);
   const chartHoraRef = useRef<HTMLDivElement | null>(null);
 
-  // Refs SOLO del área del gráfico (lo que rasterizamos)
+  // Refs SOLO del área del gráfico (lo que rasterizamos) - Citas
   const capDiaRef = useRef<HTMLDivElement | null>(null);
   const capSemanaRef = useRef<HTMLDivElement | null>(null);
   const capEspRef = useRef<HTMLDivElement | null>(null);
   const capHoraRef = useRef<HTMLDivElement | null>(null);
+
+  // Refs para gráficos de Pagos (para PDF)
+  const capIngresosDiaRef = useRef<HTMLDivElement | null>(null);
+  const capMetodoPagoRef = useRef<HTMLDivElement | null>(null);
+  const capCitasVsPagosRef = useRef<HTMLDivElement | null>(null);
+  const capIngresosSemanaRef = useRef<HTMLDivElement | null>(null);
 
   const fetchFiltros = async () => {
     const [od, co, es] = await Promise.all([
@@ -227,7 +249,7 @@ const Reportes = () => {
     }
   };
 
-  // DOM → PNG con html2canvas (evita recortes usando scrollWidth/scrollHeight)
+  // DOM, PNG con html2canvas (evita recortes usando scrollWidth/scrollHeight)
   const elementToPNG = async (el: HTMLElement, scale = 2): Promise<string> => {
     const width = Math.max(el.scrollWidth, el.clientWidth);
     const height = Math.max(el.scrollHeight, el.clientHeight);
@@ -240,6 +262,31 @@ const Reportes = () => {
       height,
       windowWidth: width,
       windowHeight: height,
+      onclone: (clonedDoc) => {
+        // Forzar colores RGB en TODOS los elementos para evitar problemas con oklch()
+        const allElements = clonedDoc.querySelectorAll('*');
+        allElements.forEach((elem: any) => {
+          const style = elem.style;
+          if (style) {
+            // Forzar colores básicos RGB/HEX
+            if (style.color && style.color.includes('oklch')) {
+              style.color = '#374151';
+            }
+            if (style.backgroundColor && style.backgroundColor.includes('oklch')) {
+              style.backgroundColor = '#ffffff';
+            }
+            if (style.borderColor && style.borderColor.includes('oklch')) {
+              style.borderColor = '#e5e7eb';
+            }
+            if (style.fill && style.fill.includes('oklch')) {
+              style.fill = '#374151';
+            }
+            if (style.stroke && style.stroke.includes('oklch')) {
+              style.stroke = '#374151';
+            }
+          }
+        });
+      },
     });
     return canvas.toDataURL("image/png");
   };
@@ -330,11 +377,16 @@ const Reportes = () => {
       });
       cursorY = (doc as any).lastAutoTable.finalY + 16;
 
-      // KPIs
+      // ===== SECCIÓN: ANÁLISIS DE CITAS =====
+      doc.setFont("helvetica", "bold").setFontSize(14);
+      doc.text("ANALISIS DE CITAS", marginX, cursorY);
+      cursorY += 20;
+
+      // KPIs de Citas
       const k = data.kpis;
       autoTable(doc, {
         startY: cursorY,
-        head: [["Métrica", "Valor"]],
+        head: [["Estadísticas de Citas", "Valor"]],
         body: [
           ["Citas totales", String(k.citas_totales)],
           ["Realizadas", String(k.realizadas)],
@@ -347,23 +399,54 @@ const Reportes = () => {
         theme: "grid",
         margin: { left: marginX, right: marginX },
       });
-      cursorY = (doc as any).lastAutoTable.finalY + 16;
+      cursorY = (doc as any).lastAutoTable.finalY + 20;
 
-      // Top pacientes (Top 10) en la PRIMERA página
+      // ===== SECCIÓN: ANÁLISIS DE PAGOS =====
+      if (data.kpis_pagos) {
+        doc.setFont("helvetica", "bold").setFontSize(14);
+        doc.text("ANALISIS DE PAGOS", marginX, cursorY);
+        cursorY += 20;
+
+        const kp = data.kpis_pagos;
+        autoTable(doc, {
+          startY: cursorY,
+          head: [["Estadísticas de Pagos", "Valor"]],
+          body: [
+            ["Ingreso neto", `$${kp.ingreso_neto.toFixed(2)}`],
+            ["Total recaudado", `$${kp.total_recaudado.toFixed(2)}`],
+            ["Total reembolsado", `$${kp.total_reembolsado.toFixed(2)}`],
+            ["Pagos completados", String(kp.pagos_completados)],
+            ["Pagos pendientes", String(kp.pagos_pendientes)],
+            ["Cantidad reembolsos", String(kp.cantidad_reembolsos)],
+            ["Tasa de pago (%)", `${kp.tasa_pago.toFixed(1)} %`],
+          ],
+          styles: { fontSize: 10, cellPadding: 5 },
+          headStyles: { fillColor: [16, 185, 129], textColor: 255 },
+          theme: "grid",
+          margin: { left: marginX, right: marginX },
+        });
+        cursorY = (doc as any).lastAutoTable.finalY + 20;
+      }
+
+      // Top pacientes (Top 10)
+      doc.setFont("helvetica", "bold").setFontSize(12);
+      doc.text("TOP 10 PACIENTES", marginX, cursorY);
+      cursorY += 16;
+
       const top10 = (data.tablas.top_pacientes || []).slice(0, 10);
       autoTable(doc, {
         startY: cursorY,
-        head: [["Top 10 pacientes", "Cédula", "Citas"]],
+        head: [["#", "Paciente", "Cédula", "Citas"]],
         body: top10.length
-          ? top10.map((r) => [r.paciente, r.cedula, String(r.citas)])
-          : [["Sin datos", "—", "—"]],
+          ? top10.map((r, i) => [String(i + 1), r.paciente, r.cedula, String(r.citas)])
+          : [["—", "Sin datos", "—", "—"]],
         styles: { fontSize: 10, cellPadding: 5 },
         headStyles: { fillColor: [59, 130, 246], textColor: 255 },
         theme: "striped",
         margin: { left: marginX, right: marginX },
       });
 
-      // ===== Página 2: 4 gráficos (2×2) =====
+      // ===== Página 2: Gráficos de Citas (2×2) =====
       doc.addPage();
       const pageW = doc.internal.pageSize.getWidth();
       const pageH = doc.internal.pageSize.getHeight();
@@ -371,7 +454,7 @@ const Reportes = () => {
       const usableH = pageH - marginY * 2;
 
       doc.setFont("helvetica", "bold").setFontSize(14);
-      doc.text("Gráficos", marginX, marginY);
+      doc.text("GRAFICOS DE CITAS", marginX, marginY);
 
       const gutter = 12;
       const cols = 2,
@@ -379,7 +462,7 @@ const Reportes = () => {
       const cellW = (usableW - gutter) / cols;
       const cellH = (usableH - gutter - 18) / rows;
 
-      const blocks: Array<{
+      const citasBlocks: Array<{
         title: string;
         ref: React.MutableRefObject<HTMLDivElement | null>;
       }> = [
@@ -391,16 +474,16 @@ const Reportes = () => {
 
       await new Promise((r) => setTimeout(r, 100));
 
-      for (let i = 0; i < blocks.length; i++) {
+      for (let i = 0; i < citasBlocks.length; i++) {
         const c = i % cols;
         const r = Math.floor(i / cols);
         const baseX = marginX + c * (cellW + gutter);
         const baseY = marginY + 18 + r * (cellH + gutter);
 
         doc.setFont("helvetica", "bold").setFontSize(11);
-        doc.text(blocks[i].title, baseX, baseY + 12);
+        doc.text(citasBlocks[i].title, baseX, baseY + 12);
 
-        const el = blocks[i].ref.current;
+        const el = citasBlocks[i].ref.current;
         if (el) {
           const dataUrl = await elementToPNG(el, 2);
           await drawImageInRect(
@@ -414,6 +497,52 @@ const Reportes = () => {
         } else {
           doc.setFont("helvetica", "normal").setFontSize(10);
           doc.text("No se pudo capturar el gráfico.", baseX, baseY + 36);
+        }
+      }
+
+      // ===== Página 3: Gráficos de Pagos (2×2) =====
+      if (data.kpis_pagos) {
+        doc.addPage();
+
+        doc.setFont("helvetica", "bold").setFontSize(14);
+        doc.text("GRAFICOS DE PAGOS", marginX, marginY);
+
+        const pagosBlocks: Array<{
+          title: string;
+          ref: React.MutableRefObject<HTMLDivElement | null>;
+        }> = [
+          { title: "Ingresos por día", ref: capIngresosDiaRef },
+          { title: "Métodos de pago", ref: capMetodoPagoRef },
+          { title: "Citas realizadas vs Pagadas", ref: capCitasVsPagosRef },
+          { title: "Tendencia de ingresos (por semana)", ref: capIngresosSemanaRef },
+        ];
+
+        await new Promise((r) => setTimeout(r, 100));
+
+        for (let i = 0; i < pagosBlocks.length; i++) {
+          const c = i % cols;
+          const r = Math.floor(i / cols);
+          const baseX = marginX + c * (cellW + gutter);
+          const baseY = marginY + 18 + r * (cellH + gutter);
+
+          doc.setFont("helvetica", "bold").setFontSize(11);
+          doc.text(pagosBlocks[i].title, baseX, baseY + 12);
+
+          const el = pagosBlocks[i].ref.current;
+          if (el) {
+            const dataUrl = await elementToPNG(el, 2);
+            await drawImageInRect(
+              doc,
+              dataUrl,
+              baseX,
+              baseY + 20,
+              cellW,
+              cellH - 24
+            );
+          } else {
+            doc.setFont("helvetica", "normal").setFontSize(10);
+            doc.text("No se pudo capturar el gráfico.", baseX, baseY + 36);
+          }
         }
       }
 
@@ -466,10 +595,13 @@ const Reportes = () => {
         <div className="flex items-center gap-2 mb-4 text-gray-600">
           <Filter size={16} /> Filtros
         </div>
+
         <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
-          <div>
-            <label className="text-sm text-gray-600 flex items-center gap-1">
-              <CalendarDays size={14} /> Desde
+          {/* Desde */}
+          <div className="flex flex-col justify-end">
+            <label className="text-sm text-gray-600 flex items-center gap-1 leading-none mb-1">
+              <CalendarDays size={14} className="shrink-0" />
+              <span>Desde</span>
             </label>
             <input
               type="date"
@@ -477,22 +609,31 @@ const Reportes = () => {
               onChange={(e) =>
                 setFiltros((s) => ({ ...s, desde: e.target.value }))
               }
-              className="mt-1 w-full border rounded-lg px-3 py-2"
+              className="w-full border rounded-lg px-3 py-2"
             />
           </div>
-          <div>
-            <label className="text-sm text-gray-600">Hasta</label>
+
+          {/* Hasta */}
+          <div className="flex flex-col justify-end">
+            <label className="text-sm text-gray-600 flex items-center gap-1 leading-none mb-1">
+              <CalendarDays size={14} className="shrink-0" />
+              <span>Hasta</span>
+            </label>
             <input
               type="date"
               value={filtros.hasta}
               onChange={(e) =>
                 setFiltros((s) => ({ ...s, hasta: e.target.value }))
               }
-              className="mt-1 w-full border rounded-lg px-3 py-2"
+              className="w-full border rounded-lg px-3 py-2"
             />
           </div>
-          <div>
-            <label className="text-sm text-gray-600">Odontólogo</label>
+
+          {/* Odontólogo */}
+          <div className="flex flex-col justify-end">
+            <label className="text-sm text-gray-600 leading-none mb-1">
+              Odontólogo
+            </label>
             <select
               value={filtros.odontologo ?? ""}
               onChange={(e) =>
@@ -501,7 +642,7 @@ const Reportes = () => {
                   odontologo: e.target.value ? Number(e.target.value) : "",
                 }))
               }
-              className="mt-1 w-full border rounded-lg px-3 py-2"
+              className="w-full border rounded-lg px-3 py-2"
             >
               <option value="">Todos</option>
               {odontologos.map((o) => (
@@ -511,8 +652,12 @@ const Reportes = () => {
               ))}
             </select>
           </div>
-          <div>
-            <label className="text-sm text-gray-600">Consultorio</label>
+
+          {/* Consultorio */}
+          <div className="flex flex-col justify-end">
+            <label className="text-sm text-gray-600 leading-none mb-1">
+              Consultorio
+            </label>
             <select
               value={filtros.consultorio ?? ""}
               onChange={(e) =>
@@ -521,7 +666,7 @@ const Reportes = () => {
                   consultorio: e.target.value ? Number(e.target.value) : "",
                 }))
               }
-              className="mt-1 w-full border rounded-lg px-3 py-2"
+              className="w-full border rounded-lg px-3 py-2"
             >
               <option value="">Todos</option>
               {consultorios.map((c) => (
@@ -531,14 +676,18 @@ const Reportes = () => {
               ))}
             </select>
           </div>
-          <div>
-            <label className="text-sm text-gray-600">Estado</label>
+
+          {/* Estado */}
+          <div className="flex flex-col justify-end">
+            <label className="text-sm text-gray-600 leading-none mb-1">
+              Estado
+            </label>
             <select
               value={filtros.estado ?? ""}
               onChange={(e) =>
                 setFiltros((s) => ({ ...s, estado: e.target.value as any }))
               }
-              className="mt-1 w-full border rounded-lg px-3 py-2"
+              className="w-full border rounded-lg px-3 py-2"
             >
               <option value="">Todos</option>
               <option value="pendiente">Pendiente</option>
@@ -547,8 +696,12 @@ const Reportes = () => {
               <option value="realizada">Realizada</option>
             </select>
           </div>
-          <div>
-            <label className="text-sm text-gray-600">Especialidad</label>
+
+          {/* Especialidad */}
+          <div className="flex flex-col justify-end">
+            <label className="text-sm text-gray-600 leading-none mb-1">
+              Especialidad
+            </label>
             <select
               value={filtros.especialidad ?? ""}
               onChange={(e) =>
@@ -557,7 +710,7 @@ const Reportes = () => {
                   especialidad: e.target.value ? Number(e.target.value) : "",
                 }))
               }
-              className="mt-1 w-full border rounded-lg px-3 py-2"
+              className="w-full border rounded-lg px-3 py-2"
             >
               <option value="">Todas</option>
               {especialidades.map((es) => (
@@ -568,30 +721,63 @@ const Reportes = () => {
             </select>
           </div>
         </div>
+
         {err && <p className="text-red-600 mt-3">{err}</p>}
-        <div className="mt-4">
+
+        {/* Botones inferiores alineados a la derecha */}
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            onClick={() => {
+              const hoyISO = toLocalISO(new Date());
+              setFiltros({
+                desde: hoyISO,
+                hasta: hoyISO,
+                odontologo: "",
+                consultorio: "",
+                estado: "",
+                especialidad: "",
+              });
+            }}
+            className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm bg-white hover:bg-gray-50 transition-colors"
+            title="Limpiar filtros"
+          >
+            <Eraser className="w-4 h-4" />
+            Limpiar
+          </button>
+
           <button
             onClick={fetchData}
-            className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+            className="inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 transition-colors"
+            title="Aplicar filtros"
           >
+            <Filter className="w-4 h-4" />
             Aplicar filtros
           </button>
         </div>
       </div>
 
-      {/* KPIs */}
-      <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-        <KpiCard label="Citas totales" value={data?.kpis.citas_totales ?? 0} />
-        <KpiCard label="Confirmadas" value={data?.kpis.confirmadas ?? 0} />
-        <KpiCard label="Canceladas" value={data?.kpis.canceladas ?? 0} />
-        <KpiCard label="Realizadas" value={data?.kpis.realizadas ?? 0} />
-        <KpiCard
-          label="Asistencia (%)"
-          value={`${data?.kpis.asistencia_pct?.toFixed(1) ?? "0.0"} %`}
-        />
+      {/* ==================== SECCIÓN: ANÁLISIS DE CITAS ==================== */}
+      <h2 className="text-xl font-bold mt-2 mb-2 flex items-center gap-2">
+        <CalendarDays className="w-6 h-6" />
+        Análisis de Citas
+      </h2>
+
+      {/* KPIs de Citas */}
+      <div className="rounded-xl bg-white shadow-md p-4">
+        <h3 className="text-lg font-bold mb-3 text-gray-800">📅 Estadísticas de Citas</h3>
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+          <KpiCard label="Citas totales" value={data?.kpis.citas_totales ?? 0} />
+          <KpiCard label="Confirmadas" value={data?.kpis.confirmadas ?? 0} />
+          <KpiCard label="Canceladas" value={data?.kpis.canceladas ?? 0} />
+          <KpiCard label="Realizadas" value={data?.kpis.realizadas ?? 0} />
+          <KpiCard
+            label="Asistencia (%)"
+            value={`${data?.kpis.asistencia_pct?.toFixed(1) ?? "0.0"} %`}
+          />
+        </div>
       </div>
 
-      {/* Gráficos */}
+      {/* Gráficos de Citas */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
         <ChartCard
           innerRef={chartDiaRef}
@@ -660,29 +846,40 @@ const Reportes = () => {
           >
             {/* Leyenda lateral: ancho fijo para evitar recortes */}
             <div style={{ width: 220, overflow: "visible" }}>
-              <ul className="space-y-2 text-sm">
+              <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '14px' }}>
                 {pieWithPct.length ? (
                   pieWithPct.map((it, idx) => (
                     <li
                       key={idx}
-                      className="flex items-center justify-between gap-3"
+                      style={{ 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        justifyContent: 'space-between', 
+                        gap: '12px',
+                        marginBottom: idx < pieWithPct.length - 1 ? '8px' : '0'
+                      }}
                     >
-                      <div className="flex items-center gap-2 min-w-0">
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
                         <span
-                          className="inline-block w-3 h-3 rounded-sm"
-                          style={{ backgroundColor: it.color }}
+                          style={{ 
+                            display: 'inline-block', 
+                            width: '12px', 
+                            height: '12px', 
+                            borderRadius: '2px',
+                            backgroundColor: it.color 
+                          }}
                         />
-                        <span className="whitespace-normal break-words">
+                        <span style={{ whiteSpace: 'normal', wordBreak: 'break-word', color: '#374151' }}>
                           {it.name}
                         </span>
                       </div>
-                      <span className="tabular-nums shrink-0">
+                      <span style={{ flexShrink: 0, color: '#374151' }}>
                         {it.pct}% ({it.value})
                       </span>
                     </li>
                   ))
                 ) : (
-                  <li className="text-gray-500">Sin datos</li>
+                  <li style={{ color: '#6B7280' }}>Sin datos</li>
                 )}
               </ul>
             </div>
@@ -730,36 +927,237 @@ const Reportes = () => {
         </ChartCard>
       </div>
 
-      {/* Top pacientes (Top 10) en la vista */}
+      {/* ==================== SECCIÓN: ANÁLISIS DE PAGOS ==================== */}
+      <h2 className="text-xl font-bold mt-6 mb-2 flex items-center gap-2">
+        <Banknote className="w-6 h-6" />
+        Análisis de Pagos
+      </h2>
+
+      {/* KPIs de Pagos */}
       <div className="rounded-xl bg-white shadow-md p-4">
-        <h3 className="font-semibold mb-3">Top pacientes (Top 10)</h3>
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead>
-              <tr className="text-left border-b">
-                <th className="py-2">Paciente</th>
-                <th className="py-2">Cédula</th>
-                <th className="py-2">Citas</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(data?.tablas.top_pacientes ?? []).slice(0, 10).map((r, i) => (
-                <tr key={i} className="border-b last:border-0">
-                  <td className="py-2">{r.paciente}</td>
-                  <td className="py-2">{r.cedula}</td>
-                  <td className="py-2">{r.citas}</td>
-                </tr>
-              ))}
-              {!(data?.tablas.top_pacientes ?? []).length && (
-                <tr>
-                  <td className="py-2 text-gray-500" colSpan={3}>
-                    Sin datos
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+        <h3 className="text-lg font-bold mb-3 text-gray-800">💰 Estadísticas de Pagos</h3>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <KpiCard 
+            label="Ingreso neto" 
+            value={data?.kpis_pagos ? `$${(data.kpis_pagos.ingreso_neto ?? 0).toFixed(2)}` : "$0.00"} 
+          />
+          <KpiCard 
+            label="Total recaudado" 
+            value={data?.kpis_pagos ? `$${(data.kpis_pagos.total_recaudado ?? 0).toFixed(2)}` : "$0.00"} 
+          />
+          <KpiCard 
+            label="Pagos completados" 
+            value={data?.kpis_pagos?.pagos_completados ?? 0} 
+          />
+          <KpiCard 
+            label="Pagos pendientes" 
+            value={data?.kpis_pagos?.pagos_pendientes ?? 0} 
+          />
         </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+          <KpiCard 
+            label="Tasa de pago (%)" 
+            value={data?.kpis_pagos ? `${(data.kpis_pagos.tasa_pago ?? 0).toFixed(1)} %` : "0.0 %"} 
+          />
+          <KpiCard 
+            label="Reembolsados" 
+            value={data?.kpis_pagos?.cantidad_reembolsos ?? 0} 
+          />
+          <KpiCard 
+            label="Monto reembolsado" 
+            value={data?.kpis_pagos ? `$${(data.kpis_pagos.total_reembolsado ?? 0).toFixed(2)}` : "$0.00"} 
+          />
+        </div>
+      </div>
+
+      {/* Gráficos de Pagos */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 mt-4">
+        {/* Ingresos por día */}
+        <ChartCard
+          title="Ingresos por día"
+          icon={<TrendingUp size={16} />}
+          captureRef={capIngresosDiaRef}
+        >
+          {data?.series.ingresos_por_dia && data.series.ingresos_por_dia.length > 0 ? (
+            <ResponsiveContainer width="100%" height={260}>
+              <RLineChart
+                data={data.series.ingresos_por_dia}
+                margin={{ top: 8, right: 16, left: 8, bottom: 8 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke={COLORS.grid} />
+                <XAxis dataKey="fecha" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} />
+                <Tooltip
+                  formatter={(value: any) => `$${Number(value).toFixed(2)}`}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="monto"
+                  stroke="#10B981"
+                  strokeWidth={2}
+                  dot={{ r: 3 }}
+                  name="Ingresos"
+                />
+              </RLineChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="flex items-center justify-center h-[260px]" style={{ color: '#9CA3AF' }}>
+              Sin datos de ingresos
+            </div>
+          )}
+        </ChartCard>
+
+        {/* Distribución por método de pago */}
+        <ChartCard
+          title="Métodos de pago"
+          icon={<PieChart size={16} />}
+          captureRef={capMetodoPagoRef}
+        >
+          {data?.series.por_metodo_pago && data.series.por_metodo_pago.length > 0 ? (
+            <div className="flex items-center gap-4">
+              <ResponsiveContainer width="60%" height={240}>
+                <RPieChart>
+                  <Tooltip
+                    formatter={(value: any) => `$${Number(value).toFixed(2)}`}
+                  />
+                  <Pie
+                    data={data.series.por_metodo_pago}
+                    cx="50%"
+                    cy="50%"
+                    labelLine={false}
+                    outerRadius={80}
+                    fill="#8884d8"
+                    dataKey="monto"
+                    label={false}
+                  >
+                    {data.series.por_metodo_pago.map((_, idx) => (
+                      <Cell
+                        key={`cell-${idx}`}
+                        fill={idx === 0 ? "#10B981" : "#3B82F6"}
+                      />
+                    ))}
+                  </Pie>
+                </RPieChart>
+              </ResponsiveContainer>
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {data.series.por_metodo_pago.map((item, idx) => (
+                  <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div
+                      style={{
+                        width: '12px',
+                        height: '12px',
+                        borderRadius: '50%',
+                        backgroundColor: idx === 0 ? "#10B981" : "#3B82F6",
+                      }}
+                    />
+                    <div style={{ fontSize: '14px', flex: 1 }}>
+                      <div style={{ fontWeight: 500, color: '#374151' }}>{item.metodo}</div>
+                      <div style={{ color: '#4B5563' }}>
+                        {item.total} pagos • ${item.monto.toFixed(2)}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-center h-[240px]" style={{ color: '#9CA3AF' }}>
+              Sin datos de métodos de pago
+            </div>
+          )}
+        </ChartCard>
+
+        {/* Citas vs Pagos */}
+        <ChartCard
+          title="Citas realizadas vs Pagadas"
+          icon={<BarChart3 size={16} />}
+          captureRef={capCitasVsPagosRef}
+        >
+          {data?.series.citas_vs_pagos && data.series.citas_vs_pagos.length > 0 ? (
+            <ResponsiveContainer width="100%" height={260}>
+              <RBarChart
+                data={data.series.citas_vs_pagos}
+                margin={{ top: 8, right: 16, left: 8, bottom: 8 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke={COLORS.grid} />
+                <XAxis dataKey="fecha" tick={{ fontSize: 11 }} />
+                <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                <Tooltip />
+                <Legend />
+                <Bar
+                  dataKey="citas_realizadas"
+                  fill="#3B82F6"
+                  name="Realizadas"
+                />
+                <Bar dataKey="pagadas" fill="#10B981" name="Pagadas" />
+                <Bar dataKey="pendientes" fill="#F59E0B" name="Pendientes" />
+              </RBarChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="flex items-center justify-center h-[260px]" style={{ color: '#9CA3AF' }}>
+              Sin datos de comparación
+            </div>
+          )}
+        </ChartCard>
+
+        {/* Ingresos por semana */}
+        <ChartCard
+          title="Tendencia de ingresos (por semana)"
+          icon={<TrendingUp size={16} />}
+          captureRef={capIngresosSemanaRef}
+        >
+          {data?.series.ingresos_por_semana && data.series.ingresos_por_semana.length > 0 ? (
+            <ResponsiveContainer width="100%" height={260}>
+              <RBarChart
+                data={data.series.ingresos_por_semana}
+                margin={{ top: 8, right: 16, left: 8, bottom: 8 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke={COLORS.grid} />
+                <XAxis dataKey="semana" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} />
+                <Tooltip
+                  formatter={(value: any) => `$${Number(value).toFixed(2)}`}
+                />
+                <Bar dataKey="monto" fill="#10B981" name="Ingresos" radius={[8, 8, 0, 0]} />
+              </RBarChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="flex items-center justify-center h-[260px]" style={{ color: '#9CA3AF' }}>
+              Sin datos de ingresos semanales
+            </div>
+          )}
+        </ChartCard>
+      </div>
+
+      {/* Top pacientes (Top 10) */}
+      <div className="rounded-xl bg-white shadow-md overflow-hidden">
+        <table className="min-w-full text-sm">
+          <thead className="bg-gray-100 text-black font-bold border-b border-black">
+            <tr>
+              <th className="px-4 py-3 text-left font-medium">#</th>
+              <th className="px-4 py-3 text-left font-medium">Paciente</th>
+              <th className="px-4 py-3 text-left font-medium">Cédula</th>
+              <th className="px-4 py-3 text-left font-medium">Citas</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-200">
+            {(data?.tablas.top_pacientes ?? []).slice(0, 10).map((r, i) => (
+              <tr key={i} className="hover:bg-gray-50">
+                <td className="px-4 py-3 font-medium text-gray-700">{i + 1}</td>
+                <td className="px-4 py-3">{r.paciente || "—"}</td>
+                <td className="px-4 py-3">{r.cedula || "—"}</td>
+                <td className="px-4 py-3">{r.citas ?? "—"}</td>
+              </tr>
+            ))}
+            {!(data?.tablas.top_pacientes ?? []).length && (
+              <tr>
+                <td className="px-4 py-3 text-gray-500 text-center" colSpan={4}>
+                  Sin datos disponibles
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
       </div>
 
       {loading && (
@@ -804,8 +1202,15 @@ const ChartCard = ({
       {icon}
       {title}
     </div>
-    {/* SOLO el área del gráfico a rasterizar */}
-    <div ref={captureRef} className="w-full">
+    {/* SOLO el área del gráfico a rasterizar - Forzar colores RGB para html2canvas */}
+    <div 
+      ref={captureRef} 
+      className="w-full"
+      style={{ 
+        backgroundColor: '#ffffff',
+        color: '#374151'
+      }}
+    >
       {children}
     </div>
   </div>

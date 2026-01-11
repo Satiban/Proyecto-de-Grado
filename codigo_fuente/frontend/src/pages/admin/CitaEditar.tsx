@@ -1,13 +1,12 @@
 // src/pages/admin/CitaEditar.tsx
 import { useEffect, useMemo, useState, useRef, useCallback } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useLocation } from "react-router-dom";
 import type { AxiosResponse } from "axios";
 import { api } from "../../api/axios";
 import {
   CalendarDays,
   ChevronDown,
   Search,
-  ArrowLeft,
   Pencil,
   ChevronLeft,
   ChevronsLeft,
@@ -17,7 +16,10 @@ import {
 
 /* ==================== Tipos ==================== */
 type Opcion = { id: number; nombre: string };
-type OdontologoOpt = Opcion & { especialidades?: string[] };
+type OdontologoOpt = Opcion & {
+  especialidades?: string[];
+  consultorio_defecto?: { id_consultorio: number; numero: string } | null;
+};
 
 type PacienteFlat = {
   id_paciente: string;
@@ -384,6 +386,21 @@ function DatePopover({
 export default function CitaEditar() {
   const navigate = useNavigate();
   const { id } = useParams<{ id: string }>();
+  const location = useLocation();
+  const from = (location.state as any)?.from;
+
+  const handleCancel = () => {
+    if (from === "agenda" && cita?.fecha) {
+      navigate("/admin/agenda", { state: { selectedDate: cita.fecha } });
+    } else if (from === "odontologo" && cita?.id_odontologo) {
+      navigate(`/admin/odontologos/${cita.id_odontologo}`);
+    } else if (from === "paciente" && cita?.id_paciente) {
+      navigate(`/admin/pacientes/${cita.id_paciente}`);
+    } else {
+      navigate("/admin/agenda");
+    }
+  };
+
   const [page, setPage] = useState(1);
 
   /* ------- Estado ------- */
@@ -409,11 +426,17 @@ export default function CitaEditar() {
 
   // Cita (campos editables)
   const [odo, setOdo] = useState<number | "">("");
-  const [odoInfo, setOdoInfo] = useState<{
-    nombre?: string;
-    especialidad?: string;
-    consultorioDefaultId?: number | null;
-  } | null>(null);
+  const odoInfo = useMemo(() => {
+    if (!odo) return null;
+    const o = odontologos.find((x) => x.id === odo);
+    if (!o) return null;
+
+    return {
+      nombre: o.nombre,
+      especialidad: o.especialidades?.[0] ?? null,
+      consultorioDefaultId: o.consultorio_defecto?.id_consultorio ?? null,
+    };
+  }, [odo, odontologos]);
 
   const [fecha, setFecha] = useState<string>(() => toISODate(new Date()));
 
@@ -439,6 +462,7 @@ export default function CitaEditar() {
   const [estado, setEstado] = useState<CitaDet["estado"]>("pendiente");
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
+  const [showSuccess, setShowSuccess] = useState(false);
 
   const morning = horasDisp.filter((h) => parseInt(h.slice(0, 2)) < LUNCH_FROM);
   const afternoon = horasDisp.filter(
@@ -454,30 +478,13 @@ export default function CitaEditar() {
       const planos: PacienteFlat[] = await Promise.all(
         base.map(async (p: any) => {
           const id_paciente = String(p.id_paciente ?? p.id ?? p.pk ?? "");
-          const idUsuario =
-            p.id_usuario ?? p.usuario?.id_usuario ?? p.usuario_id ?? p.usuario;
-
-          let uDet: any = null;
-          const missingKeyFields =
-            !p.cedula || !(p.primer_nombre && p.primer_apellido);
-
-          if (idUsuario != null && missingKeyFields) {
-            try {
-              const { data: u } = await api.get(`/usuarios/${idUsuario}/`);
-              uDet = u;
-            } catch {
-              uDet = null;
-            }
-          }
-
           return {
             id_paciente,
-            cedula: String(p.cedula ?? uDet?.cedula ?? ""),
-            primer_nombre: p.primer_nombre ?? uDet?.primer_nombre ?? "",
-            segundo_nombre: p.segundo_nombre ?? uDet?.segundo_nombre ?? "",
-            primer_apellido: p.primer_apellido ?? uDet?.primer_apellido ?? "",
-            segundo_apellido:
-              p.segundo_apellido ?? uDet?.segundo_apellido ?? "",
+            cedula: String(p.cedula ?? ""),
+            primer_nombre: p.primer_nombre ?? "",
+            segundo_nombre: p.segundo_nombre ?? "",
+            primer_apellido: p.primer_apellido ?? "",
+            segundo_apellido: p.segundo_apellido ?? "",
           };
         })
       );
@@ -561,23 +568,39 @@ export default function CitaEditar() {
       ]);
 
       const odList: OdontologoOpt[] = (od.data.results ?? od.data).map(
-        (o: any) => ({
-          id: o.id_odontologo,
-          nombre:
-            o.nombreCompleto ??
-            [
-              o.primer_nombre,
-              o.segundo_nombre,
-              o.primer_apellido,
-              o.segundo_apellido,
-            ]
-              .filter(Boolean)
-              .join(" "),
-          especialidades: Array.isArray(o.especialidades)
-            ? o.especialidades.filter(Boolean)
-            : [],
-        })
+        (o: any) => {
+          const nombres = [o.primer_nombre, o.segundo_nombre]
+            .filter(Boolean)
+            .join(" ");
+          const apellidos = [o.primer_apellido, o.segundo_apellido]
+            .filter(Boolean)
+            .join(" ");
+
+          // Mostrar siempre "Apellidos Nombres"
+          const displayName =
+            apellidos || nombres
+              ? `${apellidos} ${nombres}`.trim()
+              : o.nombreCompleto || "Sin nombre";
+
+          return {
+            id: o.id_odontologo,
+            nombre: displayName,
+            especialidades: Array.isArray(o.especialidades)
+              ? o.especialidades.filter(Boolean)
+              : [],
+            consultorio_defecto: o.consultorio_defecto ?? null,
+          };
+        }
       );
+
+      // Ordenar por apellidos, no por nombres
+      odList.sort((a, b) => {
+        const apA = a.nombre.split(" ")[0] || a.nombre;
+        const apB = b.nombre.split(" ")[0] || b.nombre;
+        return apA.localeCompare(apB, "es", { sensitivity: "base" });
+      });
+
+      setOdontologos(odList);
 
       const coList = (co.data.results ?? co.data).map((c: any) => ({
         id: c.id_consultorio,
@@ -614,55 +637,22 @@ export default function CitaEditar() {
       // fijar mes visible del calendario
       const d = fromISO(det.fecha);
       setViewYM({ y: d.getFullYear(), m0: d.getMonth() });
-
-      // Ajustar página para mostrar al paciente seleccionado
-      setTimeout(() => {
-        const idx = pacientesFiltrados.findIndex(
-          (p) => Number(p.id_paciente) === det.id_paciente
-        );
-        if (idx >= 0) {
-          const newPage = Math.floor(idx / PAGE_SIZE) + 1;
-          setPage(newPage);
-        }
-      }, 0);
     })();
-  }, [id, pacientesFiltrados]);
+  }, [id]);
 
-  /* ------- Info del odontólogo seleccionado ------- */
+  // Cuando ya tenemos cita cargada y pacientes, ubicar al paciente en su página
   useEffect(() => {
-    (async () => {
-      if (!odo) {
-        setOdoInfo(null);
-        return;
-      }
-      try {
-        const r = await api.get(`/odontologos/${odo}/`);
-        const o = r.data;
-        setOdoInfo({
-          nombre:
-            o.nombreCompleto ??
-            [
-              o.primer_nombre,
-              o.segundo_nombre,
-              o.primer_apellido,
-              o.segundo_apellido,
-            ]
-              .filter(Boolean)
-              .join(" "),
-          especialidad:
-            o.especialidad_nombre ?? o.especialidad?.nombre ?? o.especialidad,
-          consultorioDefaultId:
-            o.consultorio_default?.id_consultorio ??
-            o.id_consultorio_default ??
-            o.consultorio_defecto_id ??
-            o.id_consultorio_defecto ??
-            null,
-        });
-      } catch {
-        setOdoInfo(null);
-      }
-    })();
-  }, [odo]);
+    if (!cita || pacientesFiltrados.length === 0) return;
+
+    const idx = pacientesFiltrados.findIndex(
+      (p) => Number(p.id_paciente) === cita.id_paciente
+    );
+
+    if (idx >= 0) {
+      const newPage = Math.floor(idx / PAGE_SIZE) + 1;
+      setPage(newPage);
+    }
+  }, [cita, pacientesFiltrados]);
 
   /* ------- Horarios del odontólogo (no dependen del mes) ------- */
   useEffect(() => {
@@ -932,10 +922,18 @@ export default function CitaEditar() {
         fecha,
         hora: `${horaSel}:00`,
         motivo: motivo.trim(),
-        estado: normalizeEstado(estado), // ya devolverá "mantenimiento"
+        estado: normalizeEstado(estado),
       };
+
       await api.put(`/citas/${id}/`, payload);
-      navigate("/admin/agenda");
+      
+      // Mostrar toast de éxito
+      setShowSuccess(true);
+      
+      // Redirigir al detalle de la cita después de 1 segundo
+      setTimeout(() => {
+        navigate(`/admin/citas/${id}`);
+      }, 1000);
     } catch (err: any) {
       const data = err?.response?.data;
       const msg =
@@ -974,6 +972,16 @@ export default function CitaEditar() {
   /* ==================== UI ==================== */
   return (
     <div className="space-y-6">
+      {/* Toast éxito */}
+      {showSuccess && (
+        <div className="fixed top-4 right-4 z-50 animate-in fade-in zoom-in duration-200">
+          <div className="rounded-xl bg-green-600 text-white shadow-lg px-4 py-3">
+            <div className="font-semibold">¡Cita actualizada correctamente!</div>
+            <div className="text-sm text-white/90">Redirigiendo…</div>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between gap-3 flex-wrap">
         {/* Título sin id */}
         <h1 className="text-2xl font-bold flex items-center gap-2">
@@ -983,10 +991,9 @@ export default function CitaEditar() {
         <div className="flex gap-2">
           <button
             className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border bg-white hover:bg-gray-50"
-            onClick={() => navigate(`/admin/citas/${id}`)}
+            onClick={handleCancel}
           >
-            <ArrowLeft className="w-4 h-4" />
-            Volver a detalles
+            Cancelar
           </button>
 
           <button
@@ -1207,12 +1214,6 @@ export default function CitaEditar() {
           {pacSel && (
             <div className="mt-1 text-sm text-green-700">
               Seleccionado: <b>{pacSel.cedula}</b> — {pacSel.nombre}{" "}
-              <button
-                className="underline ml-2"
-                onClick={() => setPacSel(null)}
-              >
-                Cambiar
-              </button>
             </div>
           )}
         </div>
@@ -1234,13 +1235,14 @@ export default function CitaEditar() {
               <option value="">Selecciona un odontólogo…</option>
               {odontologos.map((o) => (
                 <option key={o.id} value={o.id}>
-                  {o.nombre}
+                  {o.nombre}{" "}
                   {o.especialidades?.length
-                    ? ` — ${o.especialidades.join(", ")}`
+                    ? `— ${o.especialidades.join(", ")}`
                     : ""}
                 </option>
               ))}
             </select>
+
             {odoInfo?.especialidad && (
               <div className="text-xs text-gray-600">
                 Especialidad principal: <b>{odoInfo.especialidad}</b>
@@ -1419,19 +1421,22 @@ export default function CitaEditar() {
           </div>
 
           {/* Estado */}
-          <select
-            className="border rounded-lg px-3 py-2 bg-white"
-            value={estado}
-            onChange={(e) =>
-              setEstado(normalizeEstado(e.target.value) as CitaDet["estado"])
-            }
-          >
-            <option value="pendiente">Pendiente</option>
-            <option value="confirmada">Confirmada</option>
-            <option value="realizada">Realizada</option>
-            <option value="cancelada">Cancelada</option>
-            <option value="mantenimiento">Mantenimiento</option>{" "}
-          </select>
+          <div className="grid gap-2">
+            <label className="text-sm font-medium">Estado</label>
+            <select
+              className="border rounded-lg px-3 py-2 bg-white"
+              value={estado}
+              onChange={(e) =>
+                setEstado(normalizeEstado(e.target.value) as CitaDet["estado"])
+              }
+            >
+              <option value="pendiente">Pendiente</option>
+              <option value="confirmada">Confirmada</option>
+              <option value="realizada">Realizada</option>
+              <option value="cancelada">Cancelada</option>
+              <option value="mantenimiento">Mantenimiento</option>
+            </select>
+          </div>
 
           {/* Motivo (OBLIGATORIO) */}
           <div className="grid gap-2">

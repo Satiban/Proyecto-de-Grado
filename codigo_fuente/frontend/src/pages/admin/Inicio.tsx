@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState, Fragment } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../../api/axios";
-import { Eye, Pencil } from "lucide-react";
+import { Eye } from "lucide-react";
 
 /* ===== Tipos ===== */
 type Cita = {
@@ -23,6 +23,11 @@ type Cita = {
   paciente_cedula?: string;
   odontologo_nombre?: string;
   consultorio?: { id_consultorio: number; numero: string };
+  pago?: {
+    id_pago_cita: number;
+    estado_pago: "pendiente" | "pagado" | "reembolsado";
+    monto?: string;
+  } | null;
 };
 
 /* ===== Helpers de fecha ===== */
@@ -54,7 +59,7 @@ const normalizeEstado = (s: string) =>
 /* ===== Componente de acciones por cita ===== */
 function AccionesCita({ id }: { id: number }) {
   return (
-    <div className="flex items-center justify-center gap-2">
+    <div className="flex items-center justify-center">
       <Link
         to={`/admin/citas/${id}`}
         className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
@@ -62,15 +67,6 @@ function AccionesCita({ id }: { id: number }) {
       >
         <Eye className="size-4" />
         Ver
-      </Link>
-
-      <Link
-        to={`/admin/citas/${id}/editar`}
-        className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
-        title="Editar"
-      >
-        <Pencil className="size-4" />
-        Editar
       </Link>
     </div>
   );
@@ -182,6 +178,45 @@ export default function Inicio() {
     );
   };
 
+  const estadoPagoPill = (cita: Cita) => {
+    // Si la cita no está realizada, no aplica mostrar pago
+    if (cita.estado !== "realizada") {
+      return <span className="text-gray-400 text-xs">—</span>;
+    }
+
+    // Si no hay pago registrado, mostrar como Pendiente
+    if (!cita.pago) {
+      return (
+        <span className="inline-block text-xs px-2 py-1 rounded-full border bg-amber-100 text-amber-800 border-amber-200">
+          Pendiente
+        </span>
+      );
+    }
+
+    const estado = cita.pago.estado_pago;
+    const cls =
+      estado === "pagado"
+        ? "bg-emerald-100 text-emerald-800 border-emerald-200"
+        : estado === "reembolsado"
+        ? "bg-red-100 text-red-800 border-red-200"
+        : "bg-amber-100 text-amber-800 border-amber-200";
+
+    const label =
+      estado === "pagado"
+        ? "Pagado"
+        : estado === "reembolsado"
+        ? "Reembolsado"
+        : "Pendiente";
+
+    return (
+      <span
+        className={`inline-block text-xs px-2 py-1 rounded-full border ${cls}`}
+      >
+        {label}
+      </span>
+    );
+  };
+
   return (
     <div className="space-y-6">
       <header>
@@ -229,8 +264,9 @@ export default function Inicio() {
                   <th className="py-2 px-3 text-center">Motivo</th>
                   <th className="py-2 px-3 text-center">Odontólogo</th>
                   <th className="py-2 px-3 text-center">Consultorio</th>
-                  <th className="py-2 px-3 text-center">Estado</th>
-                  <th className="py-2 px-3 text-center w-40">Acciones</th>
+                  <th className="py-2 px-3 text-center">Estado Cita</th>
+                  <th className="py-2 px-3 text-center">Estado Pago</th>
+                  <th className="py-2 px-3 text-center w-24">Acción</th>
                 </tr>
               </thead>
 
@@ -275,6 +311,9 @@ export default function Inicio() {
                             {estadoPill(first.estado)}
                           </td>
                           <td className="py-2 px-3 text-center">
+                            {estadoPagoPill(first)}
+                          </td>
+                          <td className="py-2 px-3 text-center">
                             <AccionesCita id={first.id_cita} />
                           </td>
                         </tr>
@@ -308,6 +347,9 @@ export default function Inicio() {
                               {estadoPill(cita.estado)}
                             </td>
                             <td className="py-2 px-3 text-center">
+                              {estadoPagoPill(cita)}
+                            </td>
+                            <td className="py-2 px-3 text-center">
                               <AccionesCita id={cita.id_cita} />
                             </td>
                           </tr>
@@ -320,6 +362,7 @@ export default function Inicio() {
                     <tr key={h} className="border-b border-gray-200">
                       <td className="py-2 px-3 font-medium text-center">{h}</td>
                       <td className="py-2 px-3 text-center">Libre</td>
+                      <td className="py-2 px-3 text-center">—</td>
                       <td className="py-2 px-3 text-center">—</td>
                       <td className="py-2 px-3 text-center">—</td>
                       <td className="py-2 px-3 text-center">—</td>

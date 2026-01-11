@@ -4,6 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 import axios from "axios";
 import { api } from "../../api/axios";
 import { ShieldPlus, Loader2, Eye, EyeOff } from "lucide-react";
+import { useFotoPerfil } from "../../hooks/useFotoPerfil";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:8000/api/v1";
 
@@ -31,13 +32,17 @@ function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email);
 }
 function hasStrongPassword(pwd: string): boolean {
-  // Mín. 6, al menos 1 mayúscula y 1 número
-  return /^(?=.*[A-Z])(?=.*\d).{6,}$/.test(pwd);
+  // Mín. 8, al menos 1 mayúscula y 1 número
+  return /^(?=.*[A-Z])(?=.*\d).{8,}$/.test(pwd);
 }
 function isAdult18(dateStr: string): boolean {
   if (!dateStr) return false;
   const dob = new Date(dateStr + "T00:00:00");
   if (Number.isNaN(dob.getTime())) return false;
+
+  // Validar que la fecha no sea anterior a 1930
+  if (dob.getFullYear() < 1930) return false;
+
   const today = new Date();
   let years = today.getFullYear() - dob.getFullYear();
   const mDiff = today.getMonth() - dob.getMonth();
@@ -84,9 +89,11 @@ type Errors = Partial<
 ========================= */
 export default function AdminNuevo() {
   const navigate = useNavigate();
+  const { subirFoto } = useFotoPerfil();
 
   const [saving, setSaving] = useState(false);
   const [errorTop, setErrorTop] = useState("");
+  const [showSuccess, setShowSuccess] = useState(false);
 
   // Verificación remota (cédula/email/celular)
   const [checkingCedula, setCheckingCedula] = useState(false);
@@ -95,6 +102,9 @@ export default function AdminNuevo() {
   const [cedulaExists, setCedulaExists] = useState<boolean | null>(null);
   const [emailExists, setEmailExists] = useState<boolean | null>(null);
   const [celularExists, setCelularExists] = useState<boolean | null>(null);
+  const [fechaNacimientoValid, setFechaNacimientoValid] = useState<
+    boolean | null
+  >(null);
   const lastQueried = useRef<{
     cedula?: string;
     email?: string;
@@ -104,7 +114,7 @@ export default function AdminNuevo() {
   const [errors, setErrors] = useState<Errors>({});
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
-  // ======== Estado del formulario (DECLÁRALO ANTES de usarlo) ========
+  // ======== Estado del formulario ========
   const [form, setForm] = useState({
     // Datos personales
     primer_nombre: "",
@@ -122,7 +132,7 @@ export default function AdminNuevo() {
     password: "",
     password2: "",
 
-    // Foto (opcional)
+    // Foto
     foto: null as File | null,
   });
 
@@ -137,7 +147,7 @@ export default function AdminNuevo() {
   const pwd = form.password ?? "";
   const pwd2 = form.password2 ?? "";
 
-  const pwdHasMin = pwd.length >= 6;
+  const pwdHasMin = pwd.length >= 8;
   const pwdHasUpper = /[A-Z]/.test(pwd);
   const pwdHasDigit = /\d/.test(pwd);
   const pwdStrong = pwdHasMin && pwdHasUpper && pwdHasDigit;
@@ -145,7 +155,7 @@ export default function AdminNuevo() {
   // Coincidencia
   const pwdMatch = pwd.length > 0 && pwd2.length > 0 && pwd === pwd2;
 
-  // Helpers de color (gris inicial → rojo/verde)
+  // Helpers de color
   function hintColor(valid: boolean, touched: boolean, value: string) {
     if (!touched && value.length === 0) return "text-gray-500";
     return valid ? "text-green-600" : "text-red-600";
@@ -179,6 +189,7 @@ export default function AdminNuevo() {
     if (name === "cedula") setCedulaExists(null);
     if (name === "email") setEmailExists(null);
     if (name === "celular") setCelularExists(null);
+    if (name === "fecha_nacimiento") setFechaNacimientoValid(null);
 
     // ===== Validación inmediata de contraseña =====
     if (name === "password") {
@@ -191,7 +202,7 @@ export default function AdminNuevo() {
             ? "Obligatoria."
             : hasStrongPassword(nextPwd)
             ? ""
-            : "Mín. 6, una mayúscula y un número.",
+            : "Mín. 8, una mayúscula y un número.",
         password2:
           form.password2 && nextPwd !== form.password2 ? "No coincide." : "",
       }));
@@ -217,7 +228,7 @@ export default function AdminNuevo() {
       if (field === "celular") setCelularExists(null);
     };
 
-  /* ------- Verificación remota de unicidad ------- */
+  // ------- Verificación remota de unicidad -------
   const verificarUnico = async (opts: {
     cedula?: string;
     email?: string;
@@ -341,20 +352,17 @@ export default function AdminNuevo() {
 
   useEffect(() => {
     if (form.cedula) debouncedCheckCedula();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.cedula]);
 
   useEffect(() => {
     if (form.email) debouncedCheckEmail();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.email]);
 
   useEffect(() => {
     if (form.celular) debouncedCheckCelular();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.celular]);
 
-  /* ------- Validación ------- */
+  // ------- Validación -------
   const validateAll = () => {
     const e: Errors = {};
     if (!form.primer_nombre.trim()) e.primer_nombre = "Obligatorio.";
@@ -373,15 +381,21 @@ export default function AdminNuevo() {
     if (emailExists === true) e.email = "El correo ya existe.";
 
     if (!form.fecha_nacimiento) e.fecha_nacimiento = "Obligatorio.";
-    else if (!isAdult18(form.fecha_nacimiento))
-      e.fecha_nacimiento = "Debe ser mayor de 18 años.";
+    else if (!isAdult18(form.fecha_nacimiento)) {
+      const dob = new Date(form.fecha_nacimiento + "T00:00:00");
+      if (dob.getFullYear() < 1930) {
+        e.fecha_nacimiento = "La fecha no puede ser anterior a 1930";
+      } else {
+        e.fecha_nacimiento = "Debe ser mayor de 18 años.";
+      }
+    }
 
     if (!form.sexo) e.sexo = "Selecciona el sexo.";
     if (!form.tipo_sangre) e.tipo_sangre = "Selecciona el tipo de sangre.";
 
     // contraseña + confirmación
     if (!hasStrongPassword(form.password))
-      e.password = "Mín. 6, una mayúscula y un número.";
+      e.password = "Mín. 8, una mayúscula y un número.";
     if (form.password2 !== form.password) e.password2 = "No coincide.";
 
     setErrors(e);
@@ -395,7 +409,7 @@ export default function AdminNuevo() {
         : "border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
     }`;
 
-  /* ------- Submit ------- */
+  // ------- Submit -------
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorTop("");
@@ -423,18 +437,27 @@ export default function AdminNuevo() {
       fd.append("email", form.email);
       fd.append("password", form.password);
 
-      // Rol admin clínico (id_rol=4) y activo=true
+      // Rol admin clínico (id_rol=4), activo=true
+      // NO enviar is_staff - el backend lo establece automáticamente según el rol
       fd.append("id_rol", "4");
       fd.append("activo", "true");
 
-      // Foto opcional
-      if (form.foto) fd.append("foto", form.foto);
-
-      await api.post(`/usuarios/`, fd, {
+      const userRes = await api.post(`/usuarios/`, fd, {
         headers: { "Content-Type": "multipart/form-data" },
       });
+      const id_usuario = userRes.data.id_usuario;
 
-      navigate("/admin/usuarios");
+      if (form.foto) {
+        await subirFoto(id_usuario, form.foto);
+      }
+
+      // Mostrar toast de éxito
+      setShowSuccess(true);
+
+      // Redirigir después de 1 segundo
+      setTimeout(() => {
+        navigate("/admin/administradores");
+      }, 1000);
     } catch (err: any) {
       const detail =
         err?.response?.data?.detail ||
@@ -452,6 +475,18 @@ export default function AdminNuevo() {
   /* ------- UI ------- */
   return (
     <div className="space-y-4">
+      {/* Toast éxito */}
+      {showSuccess && (
+        <div className="fixed top-4 right-4 z-50 animate-in fade-in zoom-in duration-200">
+          <div className="rounded-xl bg-green-600 text-white shadow-lg px-4 py-3">
+            <div className="font-semibold">
+              ¡Administrador creado correctamente!
+            </div>
+            <div className="text-sm text-white/90">Redirigiendo…</div>
+          </div>
+        </div>
+      )}
+
       {/* Header con acciones arriba a la derecha */}
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold flex items-center gap-2">
@@ -671,13 +706,76 @@ export default function AdminNuevo() {
                     type="date"
                     name="fecha_nacimiento"
                     value={form.fecha_nacimiento}
-                    onChange={onChange}
+                    onChange={(e) => {
+                      onChange(e);
+                      const dateStr = e.target.value;
+                      if (!dateStr) {
+                        setFechaNacimientoValid(null);
+                        return;
+                      }
+                      // Validar en tiempo real
+                      const dob = new Date(dateStr + "T00:00:00");
+                      if (Number.isNaN(dob.getTime())) {
+                        setFechaNacimientoValid(false);
+                        setErrors((prev) => ({
+                          ...prev,
+                          fecha_nacimiento: "Fecha inválida",
+                        }));
+                        return;
+                      }
+                      if (dob.getFullYear() < 1930) {
+                        setFechaNacimientoValid(false);
+                        setErrors((prev) => ({
+                          ...prev,
+                          fecha_nacimiento:
+                            "La fecha no puede ser anterior a 1930",
+                        }));
+                        return;
+                      }
+                      const today = new Date();
+                      let years = today.getFullYear() - dob.getFullYear();
+                      const mDiff = today.getMonth() - dob.getMonth();
+                      if (
+                        mDiff < 0 ||
+                        (mDiff === 0 && today.getDate() < dob.getDate())
+                      )
+                        years--;
+                      if (years < 18) {
+                        setFechaNacimientoValid(false);
+                        setErrors((prev) => ({
+                          ...prev,
+                          fecha_nacimiento: "Debe ser mayor de 18 años",
+                        }));
+                        return;
+                      }
+                      setFechaNacimientoValid(true);
+                      setErrors((prev) => ({ ...prev, fecha_nacimiento: "" }));
+                    }}
+                    min="1930-01-01"
+                    max={
+                      new Date(
+                        new Date().setFullYear(new Date().getFullYear() - 18)
+                      )
+                        .toISOString()
+                        .split("T")[0]
+                    }
                     className={inputCls("fecha_nacimiento")}
                     required
                   />
                   {errors.fecha_nacimiento && (
                     <p className="text-sm text-red-600 mt-1">
                       {errors.fecha_nacimiento}
+                    </p>
+                  )}
+                  {!errors.fecha_nacimiento &&
+                    fechaNacimientoValid === true && (
+                      <p className="text-xs text-green-600 mt-1">
+                        Fecha válida
+                      </p>
+                    )}
+                  {!errors.fecha_nacimiento && !fechaNacimientoValid && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      Mínimo 18 años (desde 1930)
                     </p>
                   )}
                 </div>
@@ -790,7 +888,7 @@ export default function AdminNuevo() {
               {/* Criterios en vivo */}
               <ul className="mt-2 text-xs space-y-1">
                 <li className={hintColor(pwdHasMin, pwdTouched, pwd)}>
-                  • Mínimo 6 caracteres
+                  • Mínimo 8 caracteres
                 </li>
                 <li className={hintColor(pwdHasUpper, pwdTouched, pwd)}>
                   • Al menos 1 mayúscula (A–Z)

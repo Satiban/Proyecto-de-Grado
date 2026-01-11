@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../../api/axios";
+import { e164ToLocal } from "../../utils/phoneFormat";
 import {
   Plus,
   Search,
@@ -13,6 +14,7 @@ import {
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
+  Shield,
 } from "lucide-react";
 
 type RolLite = { id_rol: number; rol?: string } | number | null | undefined;
@@ -163,7 +165,10 @@ export default function AdminGestion() {
     <div className="space-y-4">
       {/* Header */}
       <header className="flex items-center gap-2">
-        <h1 className="text-2xl font-bold">Gestión de Administradores</h1>
+        <h1 className="text-2xl font-bold flex items-center gap-2">
+          <Shield className="size-6" />
+          Gestión de Administradores
+        </h1>
 
         <div className="ml-auto flex items-center gap-2">
           {/* Botón volver */}
@@ -239,7 +244,7 @@ export default function AdminGestion() {
               <th className="px-4 py-3 text-left font-medium">Celular</th>
               <th className="px-4 py-3 text-left font-medium">Correo</th>
               <th className="px-4 py-3 text-left font-medium">Estado</th>
-              <th className="px-4 py-3 text-left font-medium">Staff</th>
+              <th className="px-4 py-3 text-left font-medium">Permisos Admin</th>
               <th className="px-4 py-3 text-left font-medium">Acción</th>
             </tr>
           </thead>
@@ -275,6 +280,9 @@ export default function AdminGestion() {
                 const apellidos = [u.primer_apellido, u.segundo_apellido]
                   .filter(Boolean)
                   .join(" ");
+                
+                // Convertir celular de E.164 a formato local para mostrar
+                const celularMostrar = e164ToLocal(u.celular);
 
                 return (
                   <tr key={u.id_usuario} className="hover:bg-gray-50">
@@ -282,7 +290,7 @@ export default function AdminGestion() {
                     <td className="px-4 py-3">{apellidos || "—"}</td>
                     <td className="px-4 py-3">{nombres || "—"}</td>
                     <td className="px-4 py-3">{sexoLabel(u.sexo)}</td>
-                    <td className="px-4 py-3">{u.celular || "—"}</td>
+                    <td className="px-4 py-3">{celularMostrar || "—"}</td>
                     <td className="px-4 py-3">{getEmail(u)}</td>
                     <td className="px-4 py-3">
                       {u.is_active ? (
@@ -298,11 +306,11 @@ export default function AdminGestion() {
                     <td className="px-4 py-3">
                       {u.is_staff ? (
                         <span className="inline-flex items-center rounded-full bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700 ring-1 ring-blue-200">
-                          Sí
+                          ✓ Activos
                         </span>
                       ) : (
-                        <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600 ring-1 ring-gray-200">
-                          No
+                        <span className="inline-flex items-center rounded-full bg-orange-50 px-2 py-0.5 text-xs font-medium text-orange-700 ring-1 ring-orange-200">
+                          ✕ Desactivados
                         </span>
                       )}
                     </td>

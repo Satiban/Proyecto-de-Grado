@@ -1,8 +1,10 @@
 // src/pages/admin/AdminEdicion.tsx
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Eye, EyeOff, Loader2, Pencil } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Eye, EyeOff, Loader2, Pencil, UserPlus } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../../api/axios";
+import { e164ToLocal, localToE164 } from "../../utils/phoneFormat";
+import { useFotoPerfil } from "../../hooks/useFotoPerfil";
 
 type FormState = {
   primer_nombre: string;
@@ -64,8 +66,8 @@ function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email);
 }
 function hasStrongPassword(pwd: string): boolean {
-  // Mín. 6, al menos 1 mayúscula y 1 número
-  return /^(?=.*[A-Z])(?=.*\d).{6,}$/.test(pwd);
+  // Mín. 8, al menos 1 mayúscula y 1 número
+  return /^(?=.*[A-Z])(?=.*\d).{8,}$/.test(pwd);
 }
 function isAdult18(dateStr: string): boolean {
   if (!dateStr) return false;
@@ -88,6 +90,10 @@ function useDebouncedCallback(cb: () => void, delay = 400) {
 export default function AdminEdicion() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { subirFoto, eliminarFoto } = useFotoPerfil();
+
+  const [fotoOriginal, setFotoOriginal] = useState<string | null>(null);
+  const [debeEliminarFoto, setDebeEliminarFoto] = useState(false);
 
   const [form, setForm] = useState<FormState>({
     primer_nombre: "",
@@ -113,11 +119,17 @@ export default function AdminEdicion() {
   const [showPass, setShowPass] = useState(false);
   const [showPass2, setShowPass2] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [showSuccess, setShowSuccess] = useState(false);
+
+  // Estados para live password validation
+  const [pwdTouched, setPwdTouched] = useState(false);
+  const [pwd2Touched, setPwd2Touched] = useState(false);
 
   // Originales (para no marcar duplicado si no cambiaron)
   const [origCedula, setOrigCedula] = useState<string>("");
   const [origEmail, setOrigEmail] = useState<string>("");
   const [origCelular, setOrigCelular] = useState<string>("");
+  const [origStaff, setOrigStaff] = useState<boolean>(false); // NUEVO: track original is_staff
 
   // Errores + verificación remota
   const [errors, setErrors] = useState<Errors>({});
@@ -133,6 +145,17 @@ export default function AdminEdicion() {
     celular?: string;
   }>({});
 
+  // Estado para verificar si tiene datos de paciente
+  const [tieneDatosPaciente, setTieneDatosPaciente] = useState<boolean | null>(
+    null
+  );
+  const [checkingPaciente, setCheckingPaciente] = useState(false);
+
+  // Modal de confirmación de cambio de is_staff
+  const [modalStaffOpen, setModalStaffOpen] = useState(false);
+  const [mensajeModal, setMensajeModal] = useState<string>("");
+  const [cambioRolModal, setCambioRolModal] = useState<string>("");
+
   // precargar datos del usuario a editar
   useEffect(() => {
     const load = async () => {
@@ -141,6 +164,10 @@ export default function AdminEdicion() {
       try {
         const { data } = await api.get(`/usuarios/${id}/`);
         const emailFetched = data.usuario_email ?? data.email ?? "";
+
+        // Convertir celular de E.164 a formato local para mostrar
+        const celularLocal = e164ToLocal(data.celular);
+
         setForm((prev) => ({
           ...prev,
           primer_nombre: data.primer_nombre ?? "",
@@ -151,16 +178,33 @@ export default function AdminEdicion() {
           sexo: data.sexo ?? "",
           fecha_nacimiento: data.fecha_nacimiento ?? "",
           tipo_sangre: data.tipo_sangre ?? "",
-          celular: data.celular ?? "",
+          celular: celularLocal,
           email: emailFetched,
           activa: Boolean(data.is_active),
           staff: Boolean(data.is_staff),
         }));
         setOrigCedula(String(data.cedula ?? ""));
         setOrigEmail(String(emailFetched ?? ""));
-        setOrigCelular(String(data.celular ?? ""));
+        setOrigCelular(celularLocal);
+        setOrigStaff(Boolean(data.is_staff)); // NUEVO: guardar is_staff original
         if (data?.foto && typeof data.foto === "string") {
           setPreviewUrl(data.foto);
+          setFotoOriginal(data.foto);
+          setDebeEliminarFoto(false);
+        }
+
+        // Verificar si tiene datos de paciente
+        setCheckingPaciente(true);
+        try {
+          const verifyRes = await api.get(
+            `/usuarios/${id}/verificar-rol-paciente/`
+          );
+          setTieneDatosPaciente(verifyRes.data?.existe === true);
+        } catch (err) {
+          console.error("Error al verificar rol paciente:", err);
+          setTieneDatosPaciente(null);
+        } finally {
+          setCheckingPaciente(false);
         }
       } catch (err: any) {
         const detail =
@@ -174,11 +218,26 @@ export default function AdminEdicion() {
     if (id) load();
   }, [id]);
 
-  const contrasenaNoCoincide = useMemo(() => {
-    const a = form.nueva_password?.trim() ?? "";
-    const b = form.repetir_password?.trim() ?? "";
-    return a.length > 0 && b.length > 0 && a !== b;
-  }, [form.nueva_password, form.repetir_password]);
+  // Criterios de validación de contraseña en vivo
+  const pwd = form.nueva_password ?? "";
+  const pwd2 = form.repetir_password ?? "";
+  const pwdHasMin = pwd.length >= 8;
+  const pwdHasUpper = /[A-Z]/.test(pwd);
+  const pwdHasDigit = /\d/.test(pwd);
+  const pwdStrong = pwdHasMin && pwdHasUpper && pwdHasDigit;
+  const pwdMatch = pwd.length > 0 && pwd2.length > 0 && pwd === pwd2;
+
+  // Helpers de color/borde para UX
+  function hintColor(valid: boolean, touched: boolean, value: string) {
+    if (!touched && value.length === 0) return "text-gray-500";
+    return valid ? "text-green-600" : "text-red-600";
+  }
+  function borderForPwdField(valid: boolean, touched: boolean, empty: boolean) {
+    if (!touched && empty) return "border-gray-300";
+    return valid
+      ? "border-green-600 focus:ring-2 focus:ring-green-500"
+      : "border-red-500 focus:ring-2 focus:ring-red-500";
+  }
 
   /* ===== Verificación remota (cédula / email / celular) ===== */
   const verificarUnico = async (opts: {
@@ -320,17 +379,14 @@ export default function AdminEdicion() {
 
   useEffect(() => {
     if (form.cedula) debouncedCheckCedula();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.cedula]);
 
   useEffect(() => {
     if (form.email) debouncedCheckEmail();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.email]);
 
   useEffect(() => {
     if (form.celular) debouncedCheckCelular();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.celular]);
 
   /* ===== Handlers ===== */
@@ -376,6 +432,7 @@ export default function AdminEdicion() {
 
     if (name === "nueva_password") {
       const pwd = value;
+      if (!pwdTouched) setPwdTouched(true);
       setForm((f) => ({ ...f, nueva_password: pwd }));
       setErrors((prev) => ({
         ...prev,
@@ -384,7 +441,7 @@ export default function AdminEdicion() {
             ? ""
             : hasStrongPassword(pwd)
             ? ""
-            : "Mín. 6, una mayúscula y un número.",
+            : "Mín. 8, una mayúscula y un número.",
         repetir_password:
           (form.repetir_password ?? "") && pwd !== (form.repetir_password ?? "")
             ? "No coincide."
@@ -395,6 +452,7 @@ export default function AdminEdicion() {
 
     if (name === "repetir_password") {
       const pwd2 = value;
+      if (!pwd2Touched) setPwd2Touched(true);
       setForm((f) => ({ ...f, repetir_password: pwd2 }));
       setErrors((prev) => ({
         ...prev,
@@ -443,8 +501,10 @@ export default function AdminEdicion() {
     const pwd = (form.nueva_password ?? "").trim();
     const pwd2 = (form.repetir_password ?? "").trim();
     if (pwd || pwd2) {
-      if (!hasStrongPassword(pwd)) {
-        e.nueva_password = "Mín. 6, una mayúscula y un número.";
+      if (pwd.length < 8) {
+        e.nueva_password = "Mínimo 8 caracteres.";
+      } else if (!hasStrongPassword(pwd)) {
+        e.nueva_password = "Mín. 8, una mayúscula y un número.";
       }
       if (pwd2 !== pwd) {
         e.repetir_password = "No coincide.";
@@ -468,51 +528,87 @@ export default function AdminEdicion() {
       return;
     }
 
+    // NUEVO: Detectar cambio en is_staff
+    const cambioStaff = form.staff !== origStaff;
+
+    if (cambioStaff) {
+      // Previsualizar el cambio
+      try {
+        const { data } = await api.post(
+          `/usuarios/${id}/previsualizar-cambio-staff/`,
+          {
+            nuevo_is_staff: form.staff,
+          }
+        );
+
+        if (data.permitido) {
+          // Mostrar modal de confirmación
+          setMensajeModal(data.mensaje || "¿Confirmar cambio de permisos?");
+          setCambioRolModal(data.cambio_rol || "");
+          setModalStaffOpen(true);
+          return; // No continuar con el guardado aún
+        }
+      } catch (err: any) {
+        const detail =
+          err?.response?.data?.detail ||
+          err?.response?.data?.motivo ||
+          "Error al verificar el cambio de permisos.";
+        setError(detail);
+        return;
+      }
+    }
+
+    // Si no hay cambio de staff, guardar normalmente
+    await guardarCambios();
+  };
+
+  const guardarCambios = async () => {
+    if (!id) return;
+
     try {
       setSaving(true);
 
-      const hasPhoto = !!form.foto;
-      if (hasPhoto) {
-        const fd = new FormData();
-        fd.append("primer_nombre", form.primer_nombre);
-        fd.append("segundo_nombre", form.segundo_nombre);
-        fd.append("primer_apellido", form.primer_apellido);
-        fd.append("segundo_apellido", form.segundo_apellido);
-        fd.append("cedula", form.cedula);
-        fd.append("sexo", form.sexo);
-        fd.append("fecha_nacimiento", form.fecha_nacimiento);
-        fd.append("tipo_sangre", form.tipo_sangre);
-        fd.append("celular", form.celular);
-        fd.append("email", form.email);
-        fd.append("activo", form.activa ? "true" : "false");
-        fd.append("is_staff", form.staff ? "true" : "false");
-        if (form.nueva_password) fd.append("password", form.nueva_password);
-        if (form.foto) fd.append("foto", form.foto);
+      // ------------------------------
+      // 1) Enviar datos (SIN foto)
+      // ------------------------------
+      const payload: any = {
+        primer_nombre: form.primer_nombre,
+        segundo_nombre: form.segundo_nombre,
+        primer_apellido: form.primer_apellido,
+        segundo_apellido: form.segundo_apellido,
+        cedula: form.cedula,
+        sexo: form.sexo,
+        fecha_nacimiento: form.fecha_nacimiento,
+        tipo_sangre: form.tipo_sangre,
+        celular: localToE164(form.celular),
+        email: form.email,
+        activo: form.activa,
+        is_staff: form.staff,
+      };
 
-        await api.patch(`/usuarios/${id}/`, fd, {
-          headers: { "Content-Type": "multipart/form-data" },
-        });
-      } else {
-        const payload: any = {
-          primer_nombre: form.primer_nombre,
-          segundo_nombre: form.segundo_nombre,
-          primer_apellido: form.primer_apellido,
-          segundo_apellido: form.segundo_apellido,
-          cedula: form.cedula,
-          sexo: form.sexo,
-          fecha_nacimiento: form.fecha_nacimiento,
-          tipo_sangre: form.tipo_sangre,
-          celular: form.celular,
-          email: form.email,
-          activo: form.activa,
-          is_staff: form.staff,
-        };
-        if (form.nueva_password) payload.password = form.nueva_password;
+      if (form.nueva_password) payload.password = form.nueva_password;
 
-        await api.patch(`/usuarios/${id}/`, payload);
+      await api.patch(`/usuarios/${id}/`, payload);
+
+      // ------------------------------
+      // 2) Manejo de foto
+      // ------------------------------
+
+      // Caso A: usuario subió una nueva foto
+      if (form.foto) {
+        await subirFoto(Number(id), form.foto);
+      }
+      // Caso B: el usuario marcó explícitamente que quiere eliminar la foto
+      else if (debeEliminarFoto) {
+        await eliminarFoto(Number(id));
       }
 
-      navigate(`/admin/usuarios/${id}`);
+      // Mostrar toast y redirigir
+      setShowSuccess(true);
+
+      setTimeout(() => {
+        navigate(`/admin/usuarios/${id}`);
+      }, 1000);
     } catch (err: any) {
       const detail =
         err?.response?.data?.detail ||
@@ -520,11 +616,19 @@ export default function AdminEdicion() {
         err?.response?.data?.email?.[0] ||
         err?.response?.data?.cedula?.[0] ||
         err?.response?.data?.celular?.[0] ||
+        err?.response?.data?.is_staff?.[0] ||
         "No se pudo guardar los cambios.";
+
       setError(typeof detail === "string" ? detail : JSON.stringify(detail));
     } finally {
       setSaving(false);
     }
+  };
+
+  // Confirmar cambio de is_staff desde el modal
+  const confirmarCambioStaff = async () => {
+    setModalStaffOpen(false);
+    await guardarCambios();
   };
 
   if (loading) {
@@ -538,15 +642,61 @@ export default function AdminEdicion() {
 
   return (
     <div className="w-full space-y-6">
+      {/* Toast éxito */}
+      {showSuccess && (
+        <div className="fixed top-4 right-4 z-50 animate-in fade-in zoom-in duration-200">
+          <div className="rounded-xl bg-green-600 text-white shadow-lg px-4 py-3">
+            <div className="font-semibold">
+              ¡Cambios guardados correctamente!
+            </div>
+            <div className="text-sm text-white/90">Redirigiendo…</div>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold flex items-center gap-2">
-          {/* Ícono lápiz al lado del título */}
-          <Pencil className="h-5 w-5 text-gray-800" />
-          Editar administrador
-        </h1>
+        <div>
+          <h1 className="text-2xl font-semibold flex items-center gap-2">
+            {/* Ícono lápiz al lado del título */}
+            <Pencil className="h-5 w-5 text-gray-800" />
+            Editar administrador
+          </h1>
+          {/* Indicador de datos de paciente */}
+          {checkingPaciente && (
+            <p className="text-xs text-gray-500 mt-1 flex items-center gap-1">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Verificando datos de paciente...
+            </p>
+          )}
+          {tieneDatosPaciente === true && (
+            <p className="text-xs text-green-600 mt-1">
+              ✓ Ya tiene datos de paciente registrados
+            </p>
+          )}
+          {tieneDatosPaciente === false && (
+            <p className="text-xs text-blue-600 mt-1">
+              Este usuario puede agregarse también como paciente
+            </p>
+          )}
+        </div>
 
         {/* Acciones arriba a la derecha */}
         <div className="flex items-center gap-2">
+          {/* Botón para agregar datos de paciente (solo si no los tiene) */}
+          {tieneDatosPaciente === false && (
+            <button
+              type="button"
+              onClick={() =>
+                navigate(`/admin/usuarios/${id}/agregar-datos-paciente`)
+              }
+              className="inline-flex items-center gap-2 rounded-lg bg-blue-600 text-white px-4 py-2 shadow hover:bg-blue-700"
+              title="Agregar datos de paciente"
+            >
+              <UserPlus className="h-4 w-4" />
+              Agregar como paciente
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => navigate(`/admin/usuarios/${id}`)}
@@ -577,6 +727,7 @@ export default function AdminEdicion() {
               {/* Foto (grande con selector debajo) */}
               <div className="md:col-span-1">
                 <div className="flex flex-col items-center gap-4">
+                  {/* Vista previa circular */}
                   <div className="w-40 h-40 rounded-full bg-gray-200 overflow-hidden ring-2 ring-gray-200">
                     {previewUrl ? (
                       <img
@@ -591,29 +742,65 @@ export default function AdminEdicion() {
                     )}
                   </div>
 
+                  {/* Selector + botones */}
                   <div className="w-full">
                     <input
                       type="file"
                       name="foto"
                       accept="image/*"
-                      onChange={onChange}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0] ?? null;
+                        setForm((f) => ({ ...f, foto: file }));
+
+                        // Si selecciona nueva foto → generar preview
+                        setPreviewUrl(
+                          file ? URL.createObjectURL(file) : fotoOriginal
+                        );
+                      }}
                       className="block w-full text-sm rounded-lg border px-3 py-2 file:mr-4 file:rounded-md file:border-0 file:px-3 file:py-1.5 file:bg-gray-800 file:text-white hover:file:bg-black/80"
                       aria-label="Seleccionar foto de perfil"
                     />
-                    {form.foto && (
-                      <div className="mt-2 flex justify-center">
+
+                    {/* BOTONES DE ACCIONES */}
+                    <div className="mt-3 flex flex-col items-center gap-2">
+                      {/* Botón: Quitar selección (foto NUEVA) */}
+                      {form.foto && (
                         <button
                           type="button"
                           onClick={() => {
                             setForm((f) => ({ ...f, foto: null }));
-                            setPreviewUrl(null);
+                            setPreviewUrl(fotoOriginal); // volver a la original
+                            setDebeEliminarFoto(false); // NUEVO → cancelar intención de eliminar
                           }}
                           className="rounded-lg border px-3 py-1.5 text-sm hover:bg-gray-50"
                         >
                           Quitar selección
                         </button>
-                      </div>
-                    )}
+                      )}
+
+                      {/* Botón: Quitar foto actual (Cloudinary) */}
+                      {fotoOriginal && !form.foto && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDebeEliminarFoto(true); // NUEVO → marcar intención real de eliminar
+                            setFotoOriginal(null);
+                            setPreviewUrl(null);
+                          }}
+                          className="rounded-lg border px-3 py-1.5 text-sm hover:bg-gray-50"
+                        >
+                          Quitar foto actual
+                        </button>
+                      )}
+
+                      {/* Mensaje cuando está marcada para eliminar */}
+                      {!fotoOriginal && !form.foto && previewUrl === null && (
+                        <span className="text-xs text-red-600 text-center">
+                          Foto marcada para eliminar
+                        </span>
+                      )}
+                    </div>
+
                     <p className="text-xs text-gray-500 text-center mt-2">
                       JPG/PNG. Máx. 5MB.
                     </p>
@@ -814,13 +1001,19 @@ export default function AdminEdicion() {
               </Field>
 
               {/* Nueva contraseña */}
-              <Field label="Nueva contraseña" error={errors.nueva_password}>
+              <Field label="Nueva contraseña (opcional)">
                 <div className="relative">
-                  <Input
+                  <input
                     type={showPass ? "text" : "password"}
                     name="nueva_password"
                     value={form.nueva_password}
                     onChange={onChange}
+                    onFocus={() => setPwdTouched(true)}
+                    className={`w-full rounded-lg border px-3 py-2 pr-10 outline-none ${borderForPwdField(
+                      pwdStrong,
+                      pwdTouched,
+                      pwd.length === 0
+                    )}`}
                     placeholder="Dejar vacío para no cambiar"
                   />
                   <button
@@ -834,25 +1027,60 @@ export default function AdminEdicion() {
                     {showPass ? <EyeOff size={18} /> : <Eye size={18} />}
                   </button>
                 </div>
-                <p className="text-xs text-gray-500 mt-1">
-                  Mínimo 6, con mayúscula y número.
+
+                {/* Reglas en vivo */}
+                <ul className="mt-2 text-xs space-y-1">
+                  <li className={hintColor(pwdHasMin, pwdTouched, pwd)}>
+                    • Mínimo 8 caracteres
+                  </li>
+                  <li className={hintColor(pwdHasUpper, pwdTouched, pwd)}>
+                    • Al menos 1 mayúscula (A–Z)
+                  </li>
+                  <li className={hintColor(pwdHasDigit, pwdTouched, pwd)}>
+                    • Al menos 1 número (0–9)
+                  </li>
+                </ul>
+
+                {/* Estado general */}
+                <p
+                  className={`mt-1 text-xs ${
+                    !pwdTouched && pwd.length === 0
+                      ? "text-gray-500"
+                      : pwdStrong
+                      ? "text-green-600"
+                      : "text-red-600"
+                  }`}
+                >
+                  {!pwdTouched && pwd.length === 0
+                    ? "Escribe una contraseña que cumpla los requisitos."
+                    : pwdStrong
+                    ? "La contraseña cumple con el formato requerido."
+                    : "La contraseña aún no cumple los requisitos."}
                 </p>
+
+                {/* Error del submit solo si sigue inválida */}
+                {errors.nueva_password && pwdTouched && !pwdStrong && (
+                  <p className="text-xs text-red-600 mt-1">
+                    {errors.nueva_password}
+                  </p>
+                )}
               </Field>
 
               {/* Repetir contraseña */}
-              <Field
-                label="Repetir contraseña"
-                error={
-                  errors.repetir_password ||
-                  (contrasenaNoCoincide ? "No coincide" : undefined)
-                }
-              >
+              <Field label="Repetir contraseña">
                 <div className="relative">
-                  <Input
+                  <input
                     type={showPass2 ? "text" : "password"}
                     name="repetir_password"
                     value={form.repetir_password}
                     onChange={onChange}
+                    onFocus={() => setPwd2Touched(true)}
+                    className={`w-full rounded-lg border px-3 py-2 pr-10 outline-none ${borderForPwdField(
+                      pwdMatch,
+                      pwd2Touched,
+                      pwd2.length === 0
+                    )}`}
+                    placeholder="Vuelve a escribir la contraseña"
                   />
                   <button
                     type="button"
@@ -865,6 +1093,30 @@ export default function AdminEdicion() {
                     {showPass2 ? <EyeOff size={18} /> : <Eye size={18} />}
                   </button>
                 </div>
+
+                {/* Mensaje en vivo de coincidencia */}
+                <p
+                  className={`mt-1 text-xs ${
+                    !pwd2Touched && pwd2.length === 0
+                      ? "text-gray-500"
+                      : pwdMatch
+                      ? "text-green-600"
+                      : "text-red-600"
+                  }`}
+                >
+                  {!pwd2Touched && pwd2.length === 0
+                    ? "Vuelve a escribir la contraseña."
+                    : pwdMatch
+                    ? "Ambas contraseñas coinciden."
+                    : "Las contraseñas no coinciden."}
+                </p>
+
+                {/* Error del submit solo si no coincide */}
+                {errors.repetir_password && pwd2Touched && !pwdMatch && (
+                  <p className="text-xs text-red-600 mt-1">
+                    {errors.repetir_password}
+                  </p>
+                )}
               </Field>
             </div>
           </div>
@@ -877,6 +1129,53 @@ export default function AdminEdicion() {
           </div>
         )}
       </form>
+
+      {/* Modal de confirmación de cambio de is_staff */}
+      {modalStaffOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full mx-4 p-6">
+            <h3 className="text-lg font-semibold mb-3 text-gray-900">
+              Confirmación de cambio de permisos
+            </h3>
+
+            <div className="space-y-3 mb-4">
+              <p className="text-sm text-gray-700">{mensajeModal}</p>
+
+              {cambioRolModal && (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                  <p className="text-xs font-medium text-blue-900">
+                    Cambio de rol:
+                  </p>
+                  <p className="text-sm text-blue-700 font-semibold">
+                    {cambioRolModal}
+                  </p>
+                </div>
+              )}
+
+              <p className="text-xs text-gray-500">
+                Este cambio afectará los permisos del usuario en el sistema.
+              </p>
+            </div>
+
+            <div className="flex gap-2 justify-end">
+              <button
+                type="button"
+                onClick={() => setModalStaffOpen(false)}
+                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={confirmarCambioStaff}
+                className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+              >
+                Confirmar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

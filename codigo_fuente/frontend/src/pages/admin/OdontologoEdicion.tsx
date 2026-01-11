@@ -2,11 +2,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../../api/axios";
-import { Eye, EyeOff, Pencil } from "lucide-react";
+import { Eye, EyeOff, Loader2, Pencil, User } from "lucide-react";
+import { e164ToLocal, localToE164 } from "../../utils/phoneFormat";
+import { useFotoPerfil } from "../../hooks/useFotoPerfil";
 
 /* ===== Tipos ===== */
 type Odontologo = {
   id_odontologo: number;
+  id_usuario?: number;
   // Usuario
   cedula: string | null;
   primer_nombre?: string | null;
@@ -20,6 +23,7 @@ type Odontologo = {
   celular?: string | null;
   usuario_email?: string | null;
   is_active: boolean;
+  activo?: boolean;
   foto?: string | null;
 
   // Profesional
@@ -83,7 +87,7 @@ const TIPOS_SANGRE = [
 ] as const;
 
 /* ===========================
-   Helpers de validación
+    Helpers de validación
 =========================== */
 // Convierte "HH:MM", "HH:MM:SS" o "HH:MM AM/PM" a minutos desde 00:00.
 // Devuelve NaN si no se puede parsear.
@@ -155,6 +159,12 @@ function splitNombreCompleto(full?: string | null) {
 /* ========= Helper URL de foto (evita /api/v1 en media) ========= */
 function absolutize(url?: string | null) {
   if (!url) return null;
+
+  // Si es nombre de archivo local como "7.JPG", no absolutizar
+  if (!url.includes("/") && !url.startsWith("http")) {
+    return null;
+  }
+
   try {
     new URL(url);
     return url;
@@ -171,7 +181,7 @@ function absolutize(url?: string | null) {
 }
 
 /* ===========================
-   Toast
+    Toast
 =========================== */
 function ToastView({
   items,
@@ -198,12 +208,13 @@ function ToastView({
 }
 
 /* ===========================
-   Componente
+    Componente
 =========================== */
 export default function OdontologoEdicion() {
   const { id } = useParams();
   const odontologoId = useMemo(() => Number(id), [id]);
   const navigate = useNavigate();
+  const { subirFoto, eliminarFoto } = useFotoPerfil();
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -213,6 +224,13 @@ export default function OdontologoEdicion() {
   const [fotoFile, setFotoFile] = useState<File | null>(null);
   const [fotoPreview, setFotoPreview] = useState<string | null>(null);
   const [fotoRemove, setFotoRemove] = useState<boolean>(false);
+  const [showSuccess, setShowSuccess] = useState(false);
+
+  // Estado para verificar si tiene datos de paciente
+  const [tieneDatosPaciente, setTieneDatosPaciente] = useState<boolean | null>(
+    null
+  );
+  const [checkingPaciente, setCheckingPaciente] = useState(false);
 
   // Mostrar/Ocultar contraseñas
   const [showPass, setShowPass] = useState(false);
@@ -233,6 +251,7 @@ export default function OdontologoEdicion() {
     password: "",
     password_confirm: "",
     is_active: false,
+    odontologo_activo: true, // Controla si tiene permisos de odontólogo
     especialidades_detalle: [] as {
       nombre: string | null;
       universidad?: string | null;
@@ -248,7 +267,7 @@ export default function OdontologoEdicion() {
   const pwd2 = form.password_confirm ?? "";
 
   // Criterios
-  const pwdHasMin = pwd.length >= 6;
+  const pwdHasMin = pwd.length >= 8;
   const pwdHasUpper = /[A-Z]/.test(pwd);
   const pwdHasDigit = /\d/.test(pwd);
   const pwdStrong = pwdHasMin && pwdHasUpper && pwdHasDigit;
@@ -314,6 +333,10 @@ export default function OdontologoEdicion() {
   const [changingToActive, setChangingToActive] = useState<boolean | null>(
     null
   );
+
+  // ==== Modal de confirmación por cambio de horario ====
+  const [modalHorarioOpen, setModalHorarioOpen] = useState(false);
+  const [previewCitasHorario, setPreviewCitasHorario] = useState<any[]>([]);
 
   // Verificación remota (cédula / email / celular)
   const [checkingCedula, setCheckingCedula] = useState(false);
@@ -404,11 +427,12 @@ export default function OdontologoEdicion() {
             sexo: normSexo(data.sexo),
             fecha_nacimiento: data.fecha_nacimiento ?? "",
             tipo_sangre: (data.tipo_sangre ?? "").toString(),
-            celular: (data.celular ?? "").toString(),
+            celular: e164ToLocal((data.celular ?? "").toString()),
             usuario_email: (data.usuario_email ?? "").toString(),
             password: "",
             password_confirm: "",
             is_active: !!data.is_active,
+            odontologo_activo: data.activo !== undefined ? !!data.activo : true, // por defecto true si no viene
             especialidades_detalle: Array.isArray(data.especialidades_detalle)
               ? data.especialidades_detalle.map((d: any) => ({
                   nombre: d?.nombre ?? null,
@@ -442,13 +466,29 @@ export default function OdontologoEdicion() {
                 base[idx] = {
                   dia_semana: idx,
                   habilitado: !!h.vigente,
-                  hora_inicio: h.hora_inicio || "",
-                  hora_fin: h.hora_fin || "",
+                  hora_inicio: h.hora_inicio ? h.hora_inicio.slice(0, 5) : "",
+                  hora_fin: h.hora_fin ? h.hora_fin.slice(0, 5) : "",
                 };
               }
             });
           }
           setHorarios(base);
+
+          // Verificar si tiene datos de paciente
+          if (data.id_usuario) {
+            setCheckingPaciente(true);
+            try {
+              const response = await api.get(
+                `/usuarios/${data.id_usuario}/verificar-rol-paciente/`
+              );
+              setTieneDatosPaciente(response.data?.existe === true);
+            } catch (err: any) {
+              console.error("Error al verificar datos de paciente:", err);
+              setTieneDatosPaciente(false);
+            } finally {
+              setCheckingPaciente(false);
+            }
+          }
         } else {
           setError("No se pudo cargar el perfil para edición.");
         }
@@ -478,7 +518,7 @@ export default function OdontologoEdicion() {
   }, [fotoFile]);
 
   /* ===========================
-     Handlers básicos
+      Handlers básicos
   =========================== */
   const onField = (k: keyof typeof form, v: string | boolean) => {
     setErrors((prev) => ({ ...prev, [k as any]: "" }));
@@ -495,9 +535,9 @@ export default function OdontologoEdicion() {
         password:
           nextPwd.length === 0
             ? ""
-            : /^(?=.*[A-Z])(?=.*\d).{6,}$/.test(nextPwd)
+            : /^(?=.*[A-Z])(?=.*\d).{8,}$/.test(nextPwd)
             ? ""
-            : "Mín. 6, una mayúscula y un número.",
+            : "Mín. 8, una mayúscula y un número.",
         // si ya hay confirmación escrita, valida coincidencia al vuelo
         password_confirm:
           form.password_confirm && nextPwd !== form.password_confirm
@@ -574,7 +614,7 @@ export default function OdontologoEdicion() {
   };
 
   /* ===========================
-     Verificación remota (cedula/email/celular)
+      Verificación remota (cedula/email/celular)
   =========================== */
   const verificarUnico = async (opts: {
     cedula?: string;
@@ -729,7 +769,7 @@ export default function OdontologoEdicion() {
   }, [form.celular]);
 
   /* ===========================
-     Validaciones antes de guardar
+      Validaciones antes de guardar
   =========================== */
   const validateBeforeSave = (): boolean => {
     const newErrors: Errors = {};
@@ -766,8 +806,8 @@ export default function OdontologoEdicion() {
         newErrors.password = "Obligatoria si cambias la contraseña.";
       if (!form.password_confirm.trim())
         newErrors.password_confirm = "Obligatoria si cambias la contraseña.";
-      if (form.password.trim() && form.password.trim().length < 6)
-        newErrors.password = "Mínimo 6 caracteres.";
+      if (form.password.trim() && form.password.trim().length < 8)
+        newErrors.password = "Mínimo 8 caracteres.";
       if (
         form.password.trim() &&
         form.password_confirm.trim() &&
@@ -808,7 +848,7 @@ export default function OdontologoEdicion() {
             break;
           }
 
-          // ❌ Solo inválido si el INICIO o el FIN caen en 13:00–15:00
+          // Solo inválido si el INICIO o el FIN caen en 13:00–15:00
           const startInLunch = ini >= LUNCH_START_M && ini < LUNCH_END_M;
           const endInLunch = fin > LUNCH_START_M && fin <= LUNCH_END_M;
           if (startInLunch) {
@@ -868,7 +908,7 @@ export default function OdontologoEdicion() {
   };
 
   /* ===========================
-     Guardar
+      Guardar
   =========================== */
   async function onSave(e: React.FormEvent) {
     e.preventDefault();
@@ -892,9 +932,9 @@ export default function OdontologoEdicion() {
         pushToast("Confirma la contraseña.", "error");
         return;
       }
-      if (form.password.trim().length < 6) {
-        setErrors((p) => ({ ...p, password: "Mínimo 6 caracteres." }));
-        pushToast("La contraseña debe tener al menos 6 caracteres.", "error");
+      if (form.password.trim().length < 8) {
+        setErrors((p) => ({ ...p, password: "Mínimo 8 caracteres." }));
+        pushToast("La contraseña debe tener al menos 8 caracteres.", "error");
         return;
       }
       if (form.password !== form.password_confirm) {
@@ -913,12 +953,49 @@ export default function OdontologoEdicion() {
         const prev = await api.post(
           `/odontologos/${odo.id_odontologo}/preview-mantenimiento/`
         );
-        setPreviewCitas(prev.data.items || []);
-        setModalOpen(true);
+        const citasAfectadas = prev.data.items || [];
+
+        // Solo mostrar modal si HAY citas afectadas
+        if (citasAfectadas.length > 0) {
+          setPreviewCitas(citasAfectadas);
+          setModalOpen(true);
+          return; // detenemos el flujo hasta que confirme en modal
+        }
+
+        // Si NO hay citas afectadas, continuar guardando sin mostrar modal
+        // El flujo continúa abajo (no hacemos return)
       } catch (err) {
-        pushToast("Error al previsualizar citas ❌", "error");
+        pushToast("Error al previsualizar citas", "error");
+        return;
       }
-      return; // detenemos el flujo hasta que confirme en modal
+    }
+
+    // === Previsualizar posibles citas afectadas por cambio de horario ===
+    try {
+      const horariosPayload = horarios.map((h) => ({
+        dia_semana: h.dia_semana,
+        hora_inicio: h.habilitado ? h.hora_inicio : "",
+        hora_fin: h.habilitado ? h.hora_fin : "",
+        habilitado: h.habilitado,
+      }));
+
+      const prev = await api.post(
+        `/odontologos/${odo.id_odontologo}/preview-horario-change/`,
+        { horarios: horariosPayload }
+      );
+
+      const citas = prev.data.items || [];
+      if (citas.length > 0) {
+        setPreviewCitasHorario(citas);
+        setModalHorarioOpen(true);
+        setSaving(false);
+        return;
+      }
+    } catch (err) {
+      console.error(err);
+      pushToast("Error al previsualizar citas afectadas", "error");
+      setSaving(false);
+      return;
     }
 
     try {
@@ -941,9 +1018,11 @@ export default function OdontologoEdicion() {
       fd.append("sexo", form.sexo || "");
       fd.append("fecha_nacimiento", form.fecha_nacimiento || "");
       fd.append("tipo_sangre", form.tipo_sangre || "");
-      fd.append("celular", form.celular || "");
+      // Convertir celular a E.164 antes de enviar
+      fd.append("celular", localToE164(form.celular || ""));
       fd.append("usuario_email", form.usuario_email || "");
       fd.append("is_active", form.is_active ? "true" : "false");
+      fd.append("activo", form.odontologo_activo ? "true" : "false");
 
       if (consultorioId !== "") {
         fd.append("consultorio_defecto_id", String(consultorioId));
@@ -959,16 +1038,6 @@ export default function OdontologoEdicion() {
       );
       fd.append("horarios", JSON.stringify(horariosPayload));
 
-      // Foto nueva
-      if (fotoFile) {
-        fd.append("foto", fotoFile);
-      }
-
-      // Eliminar foto actual
-      if (fotoRemove && !fotoFile) {
-        fd.append("foto_remove", "true");
-      }
-
       const { data } = await api.patch(
         `/odontologos/${odo.id_odontologo}/`,
         fd,
@@ -977,7 +1046,23 @@ export default function OdontologoEdicion() {
         }
       );
 
-      const updated: Odontologo = { ...data, foto: absolutize(data.foto) };
+      // SI subió foto nueva subir a Cloudinary
+      if (fotoFile) {
+        await subirFoto(odo.id_usuario!, fotoFile);
+      }
+
+      // SI eliminó la foto eliminar de Cloudinary
+      else if (fotoRemove && !fotoFile) {
+        await eliminarFoto(odo.id_usuario!);
+      }
+
+      // Recargar la foto REAL del usuario desde Cloudinary
+      const freshUser = await api.get(`/usuarios/${odo.id_usuario}/`);
+      const updated: Odontologo = {
+        ...data,
+        foto: absolutize(freshUser.data.foto),
+      };
+
       setOdo(updated);
 
       // Reset estados de foto
@@ -985,15 +1070,17 @@ export default function OdontologoEdicion() {
       setFotoPreview(null);
       setFotoRemove(false);
 
-      // Toast de éxito + redirección
-      pushToast("Cambios guardados correctamente ✅", "success");
+      // Mostrar toast de éxito y redirigir
       const targetId =
         (data && (data.id_odontologo as number)) ?? odo.id_odontologo;
 
-      // pequeña pausa para que el toast se vea y luego navegamos
+      // Mostrar toast de éxito
+      setShowSuccess(true);
+
+      // Redirigir después de mostrar el toast
       setTimeout(() => {
         navigate(`/admin/odontologos/${targetId}`);
-      }, 600);
+      }, 1000);
     } catch (e: any) {
       console.error(e);
       setError("No se pudo guardar la edición. Revisa los campos.");
@@ -1007,9 +1094,12 @@ export default function OdontologoEdicion() {
     if (!odo) return;
     try {
       if (changingToActive === false) {
-        await api.post(`/odontologos/${odo.id_odontologo}/apply-mantenimiento/`, {
-          confirm: true,
-        });
+        await api.post(
+          `/odontologos/${odo.id_odontologo}/apply-mantenimiento/`,
+          {
+            confirm: true,
+          }
+        );
       } else {
         await api.post(`/odontologos/${odo.id_odontologo}/apply-reactivate/`, {
           confirm: true,
@@ -1036,7 +1126,6 @@ export default function OdontologoEdicion() {
 
       setModalOpen(false);
 
-      // Aquí mostramos toast distinto según acción
       pushToast(
         changingToActive
           ? "Odontólogo reactivado y cambios guardados"
@@ -1051,6 +1140,81 @@ export default function OdontologoEdicion() {
     } catch (err) {
       console.error(err);
       pushToast("Error al aplicar cambio de estado", "error");
+    }
+  }
+
+  async function confirmHorarioChange() {
+    if (!odo) return;
+    try {
+      // Aplicar mantenimiento a citas afectadas
+      await api.post(
+        `/odontologos/${odo.id_odontologo}/apply-horario-change/`,
+        { confirm: true }
+      );
+
+      // Guardar el odontólogo con los nuevos horarios
+      const horariosPayload = horarios.map((h) => ({
+        dia_semana: h.dia_semana,
+        hora_inicio: h.habilitado ? h.hora_inicio : "",
+        hora_fin: h.habilitado ? h.hora_fin : "",
+        vigente: h.habilitado,
+      }));
+
+      const fd = new FormData();
+      fd.append("primer_nombre", form.primer_nombre || "");
+      fd.append("segundo_nombre", form.segundo_nombre || "");
+      fd.append("primer_apellido", form.primer_apellido || "");
+      fd.append("segundo_apellido", form.segundo_apellido || "");
+      fd.append("cedula", form.cedula || "");
+      fd.append("sexo", form.sexo || "");
+      fd.append("fecha_nacimiento", form.fecha_nacimiento || "");
+      fd.append("tipo_sangre", form.tipo_sangre || "");
+      fd.append("celular", form.celular || "");
+      fd.append("usuario_email", form.usuario_email || "");
+      fd.append("is_active", form.is_active ? "true" : "false");
+      if (consultorioId !== "") {
+        fd.append("consultorio_defecto_id", String(consultorioId));
+      }
+      if (form.password.trim()) fd.append("password", form.password.trim());
+      fd.append(
+        "especialidades_detalle",
+        JSON.stringify(form.especialidades_detalle || [])
+      );
+      fd.append("horarios", JSON.stringify(horariosPayload));
+
+      await api.patch(`/odontologos/${odo.id_odontologo}/`, fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+
+      // Recargar usuario para obtener la foto real de Cloudinary
+      if (odo.id_usuario) {
+        const freshUser = await api.get(`/usuarios/${odo.id_usuario}/`);
+        setOdo((prev) =>
+          prev ? { ...prev, foto: absolutize(freshUser.data.foto) } : prev
+        );
+      }
+
+      // CSV de citas afectadas
+      const rows = previewCitasHorario.map(
+        (c: any) =>
+          `${c.id_cita},${c.fecha},${c.hora},${c.paciente_nombre || "—"},${
+            c.estado
+          }`
+      );
+      const csv = ["ID,Fecha,Hora,Paciente,Estado", ...rows].join("\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = `citas_afectadas_horario_${odo.id_odontologo}.csv`;
+      link.click();
+
+      // Cerrar modal y feedback
+      setModalHorarioOpen(false);
+      pushToast("Cambios de horario guardados correctamente", "success");
+      navigate(`/admin/odontologos/${odo.id_odontologo}`);
+    } catch (err) {
+      console.error(err);
+      pushToast("Error al aplicar cambio de horario", "error");
     }
   }
 
@@ -1079,15 +1243,62 @@ export default function OdontologoEdicion() {
 
   return (
     <div className="space-y-6 w-full">
+      {/* Toast éxito */}
+      {showSuccess && (
+        <div className="fixed top-4 right-4 z-50 animate-in fade-in zoom-in duration-200">
+          <div className="rounded-xl bg-green-600 text-white shadow-lg px-4 py-3">
+            <div className="font-semibold">
+              ¡Cambios guardados correctamente!
+            </div>
+            <div className="text-sm text-white/90">Redirigiendo…</div>
+          </div>
+        </div>
+      )}
+
       <ToastView items={toasts} remove={removeToast} />
       {/* Header con título + acciones */}
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold flex items-center gap-2">
-          <Pencil className="h-5 w-5" />
-          Editar odontólogo
-        </h1>
+        <div>
+          <h1 className="text-2xl font-bold flex items-center gap-2">
+            <Pencil className="h-5 w-5" />
+            Editar odontólogo
+          </h1>
+          {/* Indicador de datos de paciente */}
+          {checkingPaciente && (
+            <p className="text-xs text-gray-500 mt-1 flex items-center gap-1">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Verificando datos de paciente...
+            </p>
+          )}
+          {tieneDatosPaciente === true && (
+            <p className="text-xs text-green-600 mt-1">
+              ✓ Ya tiene datos de paciente registrados
+            </p>
+          )}
+          {tieneDatosPaciente === false && (
+            <p className="text-xs text-blue-600 mt-1">
+              Este usuario puede agregarse también como paciente
+            </p>
+          )}
+        </div>
 
         <div className="flex items-center gap-2">
+          {tieneDatosPaciente === false && odo && (
+            <button
+              type="button"
+              onClick={() =>
+                navigate(
+                  `/admin/usuarios/${odo.id_usuario}/agregar-datos-paciente`
+                )
+              }
+              className="inline-flex items-center gap-2 rounded-lg border border-blue-600 bg-blue-50 text-blue-700 px-3 py-2 hover:bg-blue-100 disabled:opacity-50"
+              disabled={saving || checkingPaciente}
+              title="Agregar datos de paciente a este odontólogo"
+            >
+              <User className="h-4 w-4" />
+              Agregar como paciente
+            </button>
+          )}
           {/* Cancelar (blanco, hace lo mismo que “volver al perfil”) */}
           <button
             type="button"
@@ -1406,7 +1617,7 @@ export default function OdontologoEdicion() {
                 {/* Reglas en vivo */}
                 <ul className="mt-2 text-xs space-y-1">
                   <li className={hintColor(pwdHasMin, pwdTouched, pwd)}>
-                    • Mínimo 6 caracteres
+                    • Mínimo 8 caracteres
                   </li>
                   <li className={hintColor(pwdHasUpper, pwdTouched, pwd)}>
                     • Al menos 1 mayúscula (A–Z)
@@ -1505,23 +1716,62 @@ export default function OdontologoEdicion() {
               Información laboral
             </h3>
 
-            {/* Estado y consultorio */}
+            {/* Estado, permisos y consultorio */}
             <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Estado */}
+              {/* Acceso al sistema */}
               <div>
-                <label className="block text-sm mb-1">Estado</label>
-                <label className="w-full rounded-lg border px-3 py-2 flex items-center gap-2 cursor-pointer select-none">
+                <label className="block text-sm font-medium mb-1">
+                  Acceso al sistema
+                </label>
+                <label className="w-full rounded-lg border px-3 py-2 flex items-center gap-2 cursor-pointer select-none hover:bg-gray-50">
                   <input
                     type="checkbox"
                     checked={form.is_active}
                     onChange={(e) =>
                       setForm((f) => ({ ...f, is_active: e.target.checked }))
                     }
-                    className="h-4 w-4"
+                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 rounded"
                   />
-                  <span>{form.is_active ? "Activo" : "Inactivo"}</span>
+                  <span className="text-sm">
+                    {form.is_active
+                      ? "Usuario activo (puede ingresar)"
+                      : "Usuario inactivo (sin acceso)"}
+                  </span>
                 </label>
               </div>
+
+              {/* Permisos de Odontólogo (solo si tiene datos de paciente) */}
+              {tieneDatosPaciente === true && (
+                <div>
+                  <label className="block text-sm font-medium mb-1">
+                    Rol de odontólogo
+                  </label>
+                  <label className="w-full rounded-lg border px-3 py-2 flex items-center gap-2 cursor-pointer select-none hover:bg-gray-50">
+                    <input
+                      type="checkbox"
+                      checked={form.odontologo_activo}
+                      onChange={(e) =>
+                        setForm((f) => ({
+                          ...f,
+                          odontologo_activo: e.target.checked,
+                        }))
+                      }
+                      disabled={!form.is_active}
+                      className="h-4 w-4 text-green-600 focus:ring-green-500 rounded disabled:opacity-50"
+                    />
+                    <span className="text-sm">
+                      {form.odontologo_activo
+                        ? "Mantener como odontólogo"
+                        : "Solo paciente"}
+                    </span>
+                  </label>
+                  <p className="mt-1 text-xs text-gray-500">
+                    {form.odontologo_activo
+                      ? "Puede atender citas y acceder a vistas de odontólogo"
+                      : "Sin acceso a funciones de odontólogo (solo es paciente)"}
+                  </p>
+                </div>
+              )}
 
               {/* Consultorio por defecto */}
               <div>
@@ -1598,7 +1848,7 @@ export default function OdontologoEdicion() {
                           onChange={(e) =>
                             onHorarioToggle(h.dia_semana, e.target.checked)
                           }
-                          className="h-4 w-4 shrink-0"
+                          className="h-4 w-4 text-blue-600 focus:ring-blue-500 rounded shrink-0"
                           disabled={disabledHorario}
                         />
                         <span className="truncate">Habilitar</span>
@@ -1767,7 +2017,7 @@ export default function OdontologoEdicion() {
                             return { ...s, especialidades_detalle: arr };
                           });
                         }}
-                        className="h-4 w-4"
+                        className="h-4 w-4 text-blue-600 focus:ring-blue-500 rounded"
                       />
                       <span
                         className={`ml-2 text-xs leading-5 whitespace-nowrap ${
@@ -1838,6 +2088,62 @@ export default function OdontologoEdicion() {
                 {changingToActive
                   ? "Reactivar y guardar"
                   : "Desactivar y guardar"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {modalHorarioOpen && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl p-6">
+            <h2 className="text-lg font-bold mb-4">
+              Cambios de horario detectados
+            </h2>
+            <p className="text-sm text-gray-600 mb-3">
+              Existen citas futuras que se verán afectadas por la modificación
+              del horario. Estas citas serán puestas en estado{" "}
+              <strong>mantenimiento</strong> y deberá comunicarse con los
+              pacientes para reprogramarlas.
+            </p>
+
+            <div className="max-h-64 overflow-y-auto border rounded-lg mb-4">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-100 text-left">
+                  <tr>
+                    <th className="px-3 py-2">ID</th>
+                    <th className="px-3 py-2">Fecha</th>
+                    <th className="px-3 py-2">Hora</th>
+                    <th className="px-3 py-2">Paciente</th>
+                    <th className="px-3 py-2">Estado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {previewCitasHorario.map((c, i) => (
+                    <tr key={i} className="border-t">
+                      <td className="px-3 py-1">{c.id_cita}</td>
+                      <td className="px-3 py-1">{c.fecha}</td>
+                      <td className="px-3 py-1">{c.hora}</td>
+                      <td className="px-3 py-1">{c.paciente_nombre || "—"}</td>
+                      <td className="px-3 py-1">{c.estado}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setModalHorarioOpen(false)}
+                className="px-4 py-2 rounded-lg border hover:bg-gray-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={confirmHorarioChange}
+                className="px-4 py-2 rounded-lg text-white bg-blue-600 hover:bg-blue-700"
+              >
+                Confirmar cambio y guardar
               </button>
             </div>
           </div>

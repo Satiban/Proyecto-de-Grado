@@ -4,13 +4,15 @@ from django.utils import timezone
 from datetime import timedelta
 from django.db.models import Q
 
+
 from citas.models import (
     Cita,
     ESTADO_PENDIENTE,
     ESTADO_CANCELADA,
+    Configuracion,
 )
 
-ROL_PACIENTE = 2  # ajusta si tus IDs difieren
+ROL_PACIENTE = 2 
 
 class Command(BaseCommand):
     help = (
@@ -23,10 +25,15 @@ class Command(BaseCommand):
 
     def handle(self, *args, **opts):
         dry = opts["dry_run"]
-        now_local = timezone.localtime(timezone.now())
-        threshold = now_local + timedelta(hours=12)
 
-        # Citas PENDIENTE cuyo inicio es <= (ahora + 12h)
+        # Obtener el valor de horas desde la configuración (horas_confirmar_hasta)
+        config = Configuracion.get_config()
+        horas_confirmar_hasta = getattr(config, 'horas_confirmar_hasta', 12) or 12
+
+        now_local = timezone.localtime(timezone.now())
+        threshold = now_local + timedelta(hours=horas_confirmar_hasta)
+
+        # Citas PENDIENTE cuyo inicio es <= (ahora + horas_confirmar_hasta)
         qs = (
             Cita.objects
             .filter(estado=ESTADO_PENDIENTE)

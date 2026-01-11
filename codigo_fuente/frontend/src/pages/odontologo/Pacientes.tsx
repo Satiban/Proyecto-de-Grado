@@ -15,6 +15,7 @@ import {
 import type { AxiosResponse } from "axios";
 import { api } from "../../api/axios";
 import { useAuth } from "../../context/AuthContext";
+import { e164ToLocal } from "../../utils/phoneFormat";
 
 /* ---------- Tipo que renderiza la tabla ---------- */
 type PacienteFlat = {
@@ -28,6 +29,9 @@ type PacienteFlat = {
   celular: string;
   email: string;
   activo: boolean;
+  contacto_emergencia_cel: string | null;
+  contacto_emergencia_email: string | null;
+  fecha_nacimiento: string | null;
 };
 
 const PAGE_SIZE = 10;
@@ -113,121 +117,31 @@ const Pacientes = () => {
     setLoading(true);
     setErr("");
     try {
-      // 1) Obtener citas del odontólogo
-      const citas = await fetchAll<any>("/citas/", {
+      const data = await fetchAll<any>("/pacientes/de-odontologo/", {
         id_odontologo: odontologoId,
-        page_size: 200,
+        page_size: 100,
       });
 
-      // 2) IDs únicos de pacientes
-      const idsPacientes = Array.from(
-        new Set(citas.map((c) => Number(c.id_paciente)).filter(Boolean))
-      );
+      // Mapear los campos que devuelve el backend → PacienteFlat
+      const mapped: PacienteFlat[] = data.map((p: any) => ({
+        id_paciente: String(p.id_paciente),
+        cedula: p.cedula ?? "",
+        primer_nombre: p.primer_nombre ?? "",
+        segundo_nombre: p.segundo_nombre ?? "",
+        primer_apellido: p.primer_apellido ?? "",
+        segundo_apellido: p.segundo_apellido ?? "",
+        sexo: p.sexo ?? "",
+        celular: e164ToLocal(p.celular ?? null) ?? "",
+        email: p.usuario_email ?? p.email ?? "",
+        activo: p.is_active ?? p.activo ?? false,
+        contacto_emergencia_cel: e164ToLocal(p.contacto_emergencia_cel ?? null),
+        contacto_emergencia_email: p.contacto_emergencia_email ?? null,
+        fecha_nacimiento: p.fecha_nacimiento ?? null,
+      }));
 
-      if (idsPacientes.length === 0) {
-        setPacientes([]);
-        return;
-      }
-
-      // 3) Traer detalles de cada paciente
-      const planos: PacienteFlat[] = await Promise.all(
-        idsPacientes.map(async (idPac) => {
-          let p: any = null;
-          try {
-            const { data } = await api.get(`/pacientes/${idPac}/`);
-            p = data;
-          } catch {
-            return {
-              id_paciente: String(idPac),
-              cedula: "",
-              primer_nombre: "",
-              segundo_nombre: "",
-              primer_apellido: "",
-              segundo_apellido: "",
-              sexo: "",
-              celular: "",
-              email: "",
-              activo: false,
-            };
-          }
-
-          const id_paciente = String(p.id_paciente ?? idPac);
-          const idUsuario =
-            p.id_usuario ?? p.usuario?.id_usuario ?? p.usuario_id ?? p.usuario;
-
-          let uDet: any = null;
-          const missingKeyFields =
-            !p.cedula ||
-            !p.sexo ||
-            !(p.nombreCompleto || p.primer_nombre) ||
-            !p.celular ||
-            !p.usuario_email ||
-            p.activo === undefined;
-
-          if (idUsuario != null && missingKeyFields) {
-            try {
-              const { data: u } = await api.get(`/usuarios/${idUsuario}/`);
-              uDet = u;
-            } catch {
-              uDet = null;
-            }
-          }
-
-          const cedula = String(p.cedula ?? uDet?.cedula ?? "");
-          const sexoRaw = p.sexo ?? uDet?.sexo ?? "";
-          const sexo =
-            String(sexoRaw).toUpperCase() === "M"
-              ? "Masculino"
-              : String(sexoRaw).toUpperCase() === "F"
-              ? "Femenino"
-              : String(sexoRaw || "");
-          const celular = String(p.celular ?? uDet?.celular ?? "");
-          const email =
-            String(p.usuario_email ?? p.email ?? uDet?.email ?? "") || "";
-
-          const primer_nombre = p.primer_nombre ?? uDet?.primer_nombre ?? "";
-          const segundo_nombre = p.segundo_nombre ?? uDet?.segundo_nombre ?? "";
-          const primer_apellido =
-            p.primer_apellido ?? uDet?.primer_apellido ?? "";
-          const segundo_apellido =
-            p.segundo_apellido ?? uDet?.segundo_apellido ?? "";
-
-          const activoRaw =
-            p.activo ??
-            p.estado ??
-            p.is_active ??
-            uDet?.activo ??
-            uDet?.estado ??
-            uDet?.is_active ??
-            false;
-          const activo =
-            typeof activoRaw === "string"
-              ? ["1", "true", "activo", "active", "act"].includes(
-                  activoRaw.trim().toLowerCase()
-                )
-              : Boolean(activoRaw);
-
-          return {
-            id_paciente,
-            cedula,
-            primer_nombre,
-            segundo_nombre,
-            primer_apellido,
-            segundo_apellido,
-            sexo,
-            celular,
-            email,
-            activo,
-          };
-        })
-      );
-
-      setPacientes(planos);
+      setPacientes(mapped);
     } catch (e: any) {
-      setErr(
-        e?.response?.data?.detail ||
-          "No se pudo cargar la lista de pacientes del odontólogo."
-      );
+      setErr(e?.response?.data?.detail || "No se pudo cargar pacientes.");
       setPacientes([]);
     } finally {
       setLoading(false);
@@ -378,25 +292,60 @@ const Pacientes = () => {
                 .filter(Boolean)
                 .join(" ");
 
+              // Mostrar celular de emergencia si no tiene propio
+              const celularMostrar = p.celular || p.contacto_emergencia_cel || "—";
+              
+              // Filtrar emails del sistema (formato: cedula###...@oralflow.system)
+              const esEmailSistema = p.email?.includes("@oralflow.system");
+              
+              // Lógica de email: 
+              // 1. Si tiene email propio y NO es del sistema, mostrar el propio
+              // 2. Si no tiene email propio O es del sistema, mostrar el de emergencia
+              // 3. Si tampoco tiene email de emergencia, mostrar "—"
+              let emailMostrar = "—";
+              if (p.email && !esEmailSistema) {
+                emailMostrar = p.email;
+              } else if (p.contacto_emergencia_email) {
+                emailMostrar = p.contacto_emergencia_email;
+              }
+              
+              // Calcular si es menor de edad (< 18 años)
+              const esMenor = p.fecha_nacimiento 
+                ? new Date().getFullYear() - new Date(p.fecha_nacimiento).getFullYear() < 18
+                : false;
+
               return (
                 <tr key={p.id_paciente} className="hover:bg-gray-50">
                   <td className="px-4 py-3">{p.cedula || "—"}</td>
                   <td className="px-4 py-3">{apellidos || "—"}</td>
                   <td className="px-4 py-3">{nombres || "—"}</td>
-                  <td className="px-4 py-3">{p.sexo || "—"}</td>
                   <td className="px-4 py-3">
-                    <span
-                      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
-                        p.activo
-                          ? "bg-green-100 text-green-700"
-                          : "bg-gray-100 text-gray-700"
-                      }`}
-                    >
-                      {p.activo ? "Activo" : "Inactivo"}
-                    </span>
+                    {p.sexo === "M"
+                      ? "Masculino"
+                      : p.sexo === "F"
+                      ? "Femenino"
+                      : "—"}
                   </td>
-                  <td className="px-4 py-3">{p.celular || "—"}</td>
-                  <td className="px-4 py-3">{p.email || "—"}</td>
+                  <td className="px-4 py-3">
+                    <div className="flex flex-col gap-1">
+                      <span
+                        className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium w-fit ${
+                          p.activo
+                            ? "bg-green-100 text-green-700"
+                            : "bg-gray-100 text-gray-700"
+                        }`}
+                      >
+                        {p.activo ? "Activo" : "Inactivo"}
+                      </span>
+                      {esMenor && (
+                        <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 w-fit">
+                          Menor
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3">{celularMostrar}</td>
+                  <td className="px-4 py-3">{emailMostrar}</td>
                   <td className="px-4 py-3">
                     <AccionesPaciente id={p.id_paciente} />
                   </td>

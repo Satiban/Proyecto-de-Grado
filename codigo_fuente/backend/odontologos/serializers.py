@@ -18,20 +18,20 @@ from .models import (
     normalizar_dia_semana, 
 )
 from usuarios.models import Usuario, ODONTOLOGO_ROLE_ID  # rol=3
-from citas.models import Consultorio  # FK de Odontologo.id_consultorio_defecto
+from citas.models import Consultorio 
 
 # ==== Citas para cancelar automáticamente ====
-try:
-    from citas.models import Cita, ESTADO_PENDIENTE, ESTADO_CONFIRMADA, ESTADO_CANCELADA
-except Exception:
-    Cita = None
-    ESTADO_PENDIENTE = "pendiente"
-    ESTADO_CONFIRMADA = "confirmada"
-    ESTADO_CANCELADA = "cancelada"
 
+Cita = None
+ESTADO_PENDIENTE = "pendiente"
+ESTADO_CONFIRMADA = "confirmada"
+ESTADO_CANCELADA = "cancelada"
 
 class OdontologoSerializer(serializers.ModelSerializer):
-    # Alias write-only que recibe el front y mapea al FK real
+    primer_nombre = serializers.SerializerMethodField()
+    segundo_nombre = serializers.SerializerMethodField()
+    primer_apellido = serializers.SerializerMethodField()
+    segundo_apellido = serializers.SerializerMethodField()
     consultorio_defecto_id = serializers.PrimaryKeyRelatedField(
         source="id_consultorio_defecto",
         queryset=Consultorio.objects.all(),
@@ -48,7 +48,6 @@ class OdontologoSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             "created_at": {"read_only": True},
             "updated_at": {"read_only": True},
-            # Lo mostramos/representamos, pero lo escribimos con el alias consultorio_defecto_id
             "id_consultorio_defecto": {"read_only": True},
         }
 
@@ -59,7 +58,7 @@ class OdontologoSerializer(serializers.ModelSerializer):
     def _activo(self, user):
         if not user:
             return True
-        return bool(getattr(user, "is_active", True))  # ojo: ya no usamos "estado"
+        return bool(getattr(user, "is_active", True))
 
     def _nombre_usuario(self, user):
         if not user:
@@ -69,6 +68,18 @@ class OdontologoSerializer(serializers.ModelSerializer):
         pape = (getattr(user, "primer_apellido", "") or "").strip()
         sape = (getattr(user, "segundo_apellido", "") or "").strip()
         return " ".join(" ".join([pnom, snom, pape, sape]).split())
+    
+    def get_primer_nombre(self, obj):
+        return getattr(obj.id_usuario, "primer_nombre", None)
+
+    def get_segundo_nombre(self, obj):
+        return getattr(obj.id_usuario, "segundo_nombre", None)
+
+    def get_primer_apellido(self, obj):
+        return getattr(obj.id_usuario, "primer_apellido", None)
+
+    def get_segundo_apellido(self, obj):
+        return getattr(obj.id_usuario, "segundo_apellido", None)
 
     def _consultorio_defecto(self, obj):
         cons = getattr(obj, "id_consultorio_defecto", None)
@@ -106,7 +117,7 @@ class OdontologoSerializer(serializers.ModelSerializer):
         for h in qs:
             out.append(
                 {
-                    "dia_semana": getattr(h, "dia_semana", None),  # Lunes=0..Domingo=6
+                    "dia_semana": getattr(h, "dia_semana", None),
                     "hora_inicio": h.hora_inicio.strftime("%H:%M") if h.hora_inicio else None,
                     "hora_fin": h.hora_fin.strftime("%H:%M") if h.hora_fin else None,
                     "vigente": bool(getattr(h, "vigente", True)),
@@ -134,21 +145,19 @@ class OdontologoSerializer(serializers.ModelSerializer):
         data["fecha_nacimiento"] = s(getattr(user, "fecha_nacimiento", None))
         data["tipo_sangre"] = s(getattr(user, "tipo_sangre", None))
 
-        # Foto -> solo URL/string
+        # Foto URL desencriptada
         foto_url = None
         if user:
-            f = getattr(user, "foto", None)
-            if f:
-                if hasattr(f, "url"):
-                    try:
-                        foto_url = f.url
-                    except Exception:
-                        foto_url = s(f)
-                else:
-                    foto_url = s(f)
+            try:
+                foto_url = user.get_foto_desencriptada()
+            except Exception:
+                pass
         data["foto"] = foto_url
 
-        data["is_active"] = self._activo(user)
+        data["is_active"] = self._activo(user)  # Estado del Usuario
+        data["id_usuario"] = getattr(user, "id_usuario", None) if user else None  # ID del usuario
+        data["odontologo_activo"] = getattr(instance, "activo", True)
+        
         cons = self._consultorio_defecto(instance)
         if cons:
             cons = {"id_consultorio": cons.get("id_consultorio"), "numero": s(cons.get("numero"))}
@@ -179,7 +188,7 @@ class OdontologoSerializer(serializers.ModelSerializer):
                     pass
         return super().to_internal_value(m)
 
-    # ----------------- Parse/validación de horas -----------------
+    # ----------------- validación de horas -----------------
     @staticmethod
     def _parse_time(val: Optional[str]) -> Optional[time]:
         if not val:
@@ -199,7 +208,6 @@ class OdontologoSerializer(serializers.ModelSerializer):
                 pass
         return None
 
-    # ---- Helper: parsear booleanos desde multipart (true/false/1/0/yes/si) ----
     @staticmethod
     def _parse_bool(val) -> bool:
         if isinstance(val, bool):
@@ -209,10 +217,6 @@ class OdontologoSerializer(serializers.ModelSerializer):
 
     # ----------------- Validación de alto nivel -----------------
     def validate(self, attrs):
-        """
-        Validar que el usuario tenga rol=3 y que no exista otro odontólogo con ese usuario.
-        En update, impedimos cambiar 'id_usuario' (OneToOne ya creado).
-        """
         user = attrs.get("id_usuario")
         if self.instance:
             if user and user != self.instance.id_usuario:
@@ -221,8 +225,7 @@ class OdontologoSerializer(serializers.ModelSerializer):
 
         if not user:
             raise serializers.ValidationError({"id_usuario": "Debes especificar el usuario."})
-        if getattr(user, "id_rol_id", None) != ODONTOLOGO_ROLE_ID:
-            raise serializers.ValidationError({"id_usuario": "El usuario debe tener rol 'odontólogo' (id_rol=3)."})
+        
         if Odontologo.objects.filter(id_usuario=user).exists():
             raise serializers.ValidationError({"id_usuario": "Ese usuario ya está asociado a un odontólogo."})
         return attrs
@@ -260,7 +263,6 @@ class OdontologoSerializer(serializers.ModelSerializer):
             OdontologoEspecialidad.objects.bulk_create(bulk)
 
     def _apply_horarios(self, instance: Odontologo, hrs_payload):
-        # Reemplazamos todo por lo recibido (semántica de "definición vigente")
         OdontologoHorario.objects.filter(id_odontologo=instance).delete()
         if not hrs_payload:
             return
@@ -274,7 +276,6 @@ class OdontologoSerializer(serializers.ModelSerializer):
             if not vigente:
                 continue
 
-            # --- Normalizar día (Lunes=0..Domingo=6) ---
             raw_day = h.get("dia_semana")
             try:
                 dia_norm = normalizar_dia_semana(raw_day)
@@ -300,10 +301,9 @@ class OdontologoSerializer(serializers.ModelSerializer):
         if to_create:
             OdontologoHorario.objects.bulk_create(to_create)
 
-    # ----------------- create / update atómicos -----------------
+    # ----------------- update atómicos -----------------
     @transaction.atomic
     def create(self, validated_data: Dict[str, Any]) -> Odontologo:
-        # 'id_consultorio_defecto' ya viene listo gracias a consultorio_defecto_id (source=...)
         foto = validated_data.pop("foto", None)
 
         instance = Odontologo.objects.create(**validated_data)
@@ -372,7 +372,6 @@ class OdontologoSerializer(serializers.ModelSerializer):
 
     @transaction.atomic
     def update(self, instance: Odontologo, validated_data: Dict[str, Any]) -> Odontologo:
-        # 'id_consultorio_defecto' puede venir seteado por el alias consultorio_defecto_id
         foto = validated_data.pop("foto", None)
 
         for k, v in list(validated_data.items()):
@@ -408,9 +407,14 @@ class OdontologoSerializer(serializers.ModelSerializer):
         if foto is not None:
             user.foto = foto
         try:
-            user.save()
+            user.save()  # Esto dispara el save() del Usuario que desactiva el odontólogo automáticamente
         except IntegrityError:
             raise serializers.ValidationError({"usuario_email": "Ese correo ya está registrado."})
+        
+        # Refrescar el usuario por si el save() lo modificó
+        user.refresh_from_db()
+        # Refrescar también la instancia del odontólogo por si el save() del Usuario la modificó
+        instance.refresh_from_db()
 
         # Especialidades
         esps = None
@@ -438,8 +442,11 @@ class OdontologoSerializer(serializers.ModelSerializer):
             hrs = validated_data.get("horarios")
         self._apply_horarios(instance, hrs)
 
+        if "activo" in in_data:
+            instance.activo = self._parse_bool(in_data.get("activo"))
+
         instance.save()
-        instance.refresh_from_db()
+        instance.refresh_from_db() 
         return instance
 
 
@@ -488,7 +495,7 @@ class OdontologoHorarioSerializer(serializers.ModelSerializer):
         }
 
     def validate(self, attrs):
-        # Normaliza cualquier input de día (0..6, 1..7, nombre, etc.)
+        # Normaliza cualquier input de día
         raw_day = attrs.get("dia_semana")
         try:
             attrs["dia_semana"] = normalizar_dia_semana(raw_day)
@@ -504,10 +511,7 @@ import datetime as _dt
 class BloqueoGrupoSerializer(serializers.Serializer):
     """
     Representa un 'grupo' (UUID) de BloqueoDia, que puede abarcar varias fechas.
-    IMPORTANTE: Este serializer SOLO crea/actualiza bloqueos. NO toca estados de citas.
-    Los cambios de estado (-> mantenimiento / -> pendiente) se hacen vía endpoints:
-      - preview/apply-mantenimiento   (services/bloqueo_service.py)
-      - apply-reactivar               (services/bloqueo_service.py)
+    Este serializer SOLO crea/actualiza bloqueos. NO toca estados de citas.
     """
     id = serializers.UUIDField(read_only=True)  # = grupo
     fecha_inicio = serializers.DateField()
@@ -535,7 +539,7 @@ class BloqueoGrupoSerializer(serializers.Serializer):
         # Dentista: solo sobre su propio odontólogo
         if self._is_dent(request) and id_odontologo:
             my_od = Odontologo.objects.filter(id_usuario_id=request.user.id_usuario)\
-                                      .values_list("id_odontologo", flat=True).first()
+                                        .values_list("id_odontologo", flat=True).first()
             if my_od != id_odontologo:
                 raise serializers.ValidationError({"id_odontologo": "No puedes gestionar bloqueos de otro odontólogo."})
 
@@ -557,7 +561,7 @@ class BloqueoGrupoSerializer(serializers.Serializer):
 
     def _overlap_q(self, fi, ff, id_od):
         """
-        Construye un filtro de solape:
+        Filtro de solape:
         - no recurrentes: fecha en [fi, ff]
         - recurrentes: mes-día coincide con alguno del rango
         y mismo alcance (global u odontólogo).
@@ -603,7 +607,6 @@ class BloqueoGrupoSerializer(serializers.Serializer):
             cur += _dt.timedelta(days=1)
         BloqueoDia.objects.bulk_create(bulk)
 
-        # Nombre odontólogo (opcional)
         od_name = None
         if id_od:
             od = Odontologo.objects.select_related("id_usuario").filter(pk=id_od).first()
@@ -636,12 +639,12 @@ class BloqueoGrupoSerializer(serializers.Serializer):
         # Permisos
         self._check_permissions(request=request, id_odontologo=id_od)
 
-        # Anti-solape (excluyendo el propio grupo) con lógica de mm-dd
+        # Anti-solape (excluyendo el propio grupo)
         exists = BloqueoDia.objects.filter(self._overlap_q(fi, ff, id_od)).exclude(grupo=g).exists()
         if exists:
             raise serializers.ValidationError("Ya existe un bloqueo que intersecta ese rango (incluye recurrentes).")
 
-        # Re-generar filas del grupo (NO tocar citas aquí)
+        # Regenerar filas del grupo
         BloqueoDia.objects.filter(grupo=g).delete()
         cur = fi
         bulk = []

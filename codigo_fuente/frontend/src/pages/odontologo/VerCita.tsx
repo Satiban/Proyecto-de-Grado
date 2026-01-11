@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState, Fragment } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import { api } from "../../api/axios";
+import { useAuth } from "../../context/AuthContext";
 import {
   Pencil,
   Stethoscope,
@@ -10,7 +11,39 @@ import {
   User as UserIcon,
   Building2,
   FileText,
+  ArrowLeft,
+  Info,
+  ClipboardList,
+  Banknote,
+  Download,
+  DollarSign,
 } from "lucide-react";
+import { useLocation } from "react-router-dom";
+
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000/api/v1";
+
+function buildMediaURL(pathOrUrl?: string | null): string | null {
+  if (!pathOrUrl) return null;
+  if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
+
+  // quitar /api/v1 de la base para apuntar al host del backend
+  const base = API_BASE.endsWith("/api/v1")
+    ? API_BASE.replace(/\/api\/v1\/?$/, "")
+    : API_BASE;
+
+  return `${base}${pathOrUrl.startsWith("/") ? pathOrUrl : `/${pathOrUrl}`}`;
+}
+
+function filenameFromUrl(u: string): string {
+  try {
+    const url = new URL(u);
+    const last = url.pathname.split("/").filter(Boolean).pop() || "comprobante";
+    return decodeURIComponent(last);
+  } catch {
+    const last = (u || "").split("/").filter(Boolean).pop() || "comprobante";
+    return decodeURIComponent(last);
+  }
+}
 
 /* ===== Tipos ===== */
 type Estado =
@@ -33,6 +66,17 @@ type Cita = {
   paciente_cedula?: string | null;
   odontologo_nombre?: string | null;
   consultorio?: { id_consultorio: number; numero?: string | null } | null;
+  pago?: {
+    id_pago_cita: number;
+    monto: string;
+    metodo_pago: string;
+    fecha_pago: string;
+    observacion?: string | null;
+    comprobante?: string | null;
+    estado_pago: "pendiente" | "pagado" | "reembolsado";
+    motivo_reembolso?: string | null;
+    reembolsado_en?: string | null;
+  } | null;
 };
 
 type FichaMedica = {
@@ -117,17 +161,31 @@ const estadoLabel = (s: Estado) => {
 
 /* ===== Page ===== */
 export default function VerCita() {
+  const location = useLocation();
+  const fechaAnterior = (location.state as any)?.fecha;
+
   // Ruta sugerida: /odontologo/citas/:id/ver
   const { id } = useParams();
   const navigate = useNavigate();
+  const { usuario } = useAuth();
 
   const idCita = useMemo(() => Number(id), [id]);
+
+  // Helper para verificar si el usuario es administrador (rol 1 o 4)
+  const esAdministrador = useMemo(() => {
+    if (!usuario) return false;
+    const rolId = typeof usuario.id_rol === 'object' 
+      ? usuario.id_rol?.id_rol 
+      : usuario.id_rol;
+    return rolId === 1 || rolId === 4;
+  }, [usuario]);
 
   const [loading, setLoading] = useState(true);
   const [cita, setCita] = useState<Cita | null>(null);
   const [ficha, setFicha] = useState<FichaMedica | null>(null);
   const [adjuntos, setAdjuntos] = useState<ArchivoAdjunto[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [pago, setPago] = useState<any | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -140,6 +198,9 @@ export default function VerCita() {
         if (!alive) return;
         const citaData: Cita = c.data;
         setCita(citaData);
+
+        // Extraer pago directamente de la cita
+        setPago((citaData as any).pago ?? null);
 
         // 2) Ficha por id_cita
         const f = await api.get(`/fichas-medicas/`, {
@@ -175,8 +236,7 @@ export default function VerCita() {
     };
   }, [idCita]);
 
-  const puedeAtender =
-    cita && cita.estado !== "cancelada" && cita.estado !== "realizada";
+  const puedeAtender = cita?.estado === "confirmada";
 
   if (loading) {
     return <div className="p-4">Cargando…</div>;
@@ -217,51 +277,42 @@ export default function VerCita() {
         <h1 className="text-2xl font-bold">Cita #{cita.id_cita}</h1>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => navigate("/odontologo/agenda")}
+            onClick={() => {
+              if (fechaAnterior) {
+                navigate(`/odontologo/agenda`, {
+                  state: { fecha: fechaAnterior },
+                });
+              } else {
+                navigate(-1);
+              }
+            }}
             className="inline-flex items-center gap-2 border rounded-lg px-3 py-2 bg-white hover:bg-gray-50"
           >
+            <ArrowLeft className="w-4 h-4" />
             Volver
           </button>
-
-          {/* Editar (odontólogo) */}
-          <Link
-            to={`/odontologo/citas/${cita.id_cita}/editar`}
-            className="inline-flex items-center gap-2 border rounded-lg bg-gray-800 text-white px-4 py-2 shadow hover:bg-black/80"
-            title="Editar cita"
-          >
-            <Pencil className="size-4" />
-            Editar
-          </Link>
-
-          {/* Atender (lleva a la página de atención para llenar/actualizar ficha) */}
-          <Link
-            to={`/odontologo/citas/${cita.id_cita}/atencion`}
-            className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 shadow ${
-              puedeAtender
-                ? "bg-emerald-600 text-white hover:bg-emerald-700"
-                : "bg-gray-200 text-gray-500 cursor-not-allowed"
-            }`}
-            aria-disabled={!puedeAtender}
-            onClick={(e) => {
-              if (!puedeAtender) e.preventDefault();
-            }}
-            title={
-              puedeAtender
-                ? "Atender esta cita"
-                : "Solo se puede atender si la cita no está cancelada ni realizada"
-            }
-          >
-            <Stethoscope className="size-4" />
-            Atender
-          </Link>
         </div>
       </div>
 
       {/* ===== Card: Datos de la Cita ===== */}
       <div className="rounded-xl bg-white shadow-md p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="font-semibold">Datos de la cita</h2>
-          <EstadoBadge estado={cita.estado} />
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          {/* Título con ícono */}
+          <div className="flex items-center gap-2">
+            <Info className="w-5 h-5 text-gray-700" />
+            <h2 className="font-semibold text-gray-800">Datos de la cita</h2>
+            <EstadoBadge estado={cita.estado} />
+          </div>
+
+          {/* Botón Editar dentro de la card */}
+          <Link
+            to={`/odontologo/citas/${cita.id_cita}/editar`}
+            className="inline-flex items-center gap-2 rounded-lg bg-gray-800 text-white px-3 py-2 text-xs shadow hover:bg-black/80 transition"
+            title="Editar cita"
+          >
+            <Pencil className="w-4 h-4" />
+            Editar
+          </Link>
         </div>
 
         {/* (Fecha | Hora), (Paciente | Odontólogo), (Consultorio | Motivo) */}
@@ -311,6 +362,14 @@ export default function VerCita() {
             <div className="font-medium">
               {cita.odontologo_nombre ?? `#${cita.id_odontologo}`}
             </div>
+
+            {/* Especialidades del odontólogo */}
+            {Array.isArray((cita as any).odontologo_especialidades) &&
+              (cita as any).odontologo_especialidades.length > 0 && (
+                <div className="text-xs text-gray-500">
+                  {(cita as any).odontologo_especialidades.join(", ")}
+                </div>
+              )}
           </div>
 
           {/* Consultorio */}
@@ -339,14 +398,39 @@ export default function VerCita() {
 
       {/* ===== Card: Ficha médica ===== */}
       <div className="rounded-xl bg-white shadow-md p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="font-semibold">Ficha médica</h2>
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div className="flex items-center gap-2">
+            <ClipboardList className="w-5 h-5 text-gray-700" />
+            <h2 className="font-semibold text-gray-800">Ficha médica</h2>
+          </div>
+
+          {/* Botón Atender dentro de la card */}
+          <Link
+            to={`/odontologo/citas/${cita.id_cita}/atencion`}
+            className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs shadow ${
+              puedeAtender
+                ? "bg-emerald-600 text-white hover:bg-emerald-700 transition"
+                : "bg-gray-200 text-gray-500 cursor-not-allowed"
+            }`}
+            aria-disabled={!puedeAtender}
+            onClick={(e) => {
+              if (!puedeAtender) e.preventDefault();
+            }}
+            title={
+              puedeAtender
+                ? "Atender esta cita"
+                : "Solo se puede atender si la cita está en estado 'Confirmada'"
+            }
+          >
+            <Stethoscope className="w-4 h-4" />
+            Atender
+          </Link>
         </div>
 
         {!ficha ? (
           <div className="rounded-lg border bg-amber-50 text-amber-900 px-3 py-2 text-sm">
             Esta cita aún no tiene ficha médica. Puedes crearla desde{" "}
-            <b>Atender</b>.
+            <b>Atender</b>, siempre y cuando la cita esté en estado 'Confirmada'
           </div>
         ) : (
           <Fragment>
@@ -428,6 +512,201 @@ export default function VerCita() {
           </Fragment>
         )}
       </div>
+
+      {/* ===== Card: Pago de la Cita ===== */}
+      {cita.estado?.toLowerCase() !== "cancelada" && (
+        <div className="rounded-xl bg-white shadow-md p-4 space-y-3">
+          <div className="flex items-center justify-between flex-wrap gap-3">
+            <div className="flex items-center gap-2">
+              <Banknote className="w-5 h-5 text-gray-700" />
+              <h2 className="font-semibold">Pago de la cita</h2>
+              <span
+                className={`text-xs px-2 py-1 rounded-full border ${
+                  pago?.estado_pago === "pagado"
+                    ? "bg-emerald-100 text-emerald-800 border-emerald-200"
+                    : pago?.estado_pago === "reembolsado"
+                    ? "bg-rose-100 text-rose-800 border-rose-200"
+                    : "bg-amber-100 text-amber-800 border-amber-200"
+                }`}
+              >
+                {pago?.estado_pago
+                  ? pago.estado_pago.charAt(0).toUpperCase() +
+                    pago.estado_pago.slice(1).toLowerCase()
+                  : "Pendiente"}
+              </span>
+            </div>
+
+            {/* Botón de registrar/editar pago*/}
+            {cita.estado?.toLowerCase() === "realizada" ? (
+              pago?.estado_pago === "pagado" || pago?.estado_pago === "reembolsado" ? (
+                <div className="flex flex-col items-end gap-1">
+                  {esAdministrador ? (
+                    <Link
+                      to={`/odontologo/pagos/${pago.id_pago_cita}/editar`}
+                      state={{ from: "cita", citaId: cita.id_cita }}
+                      className="inline-flex items-center gap-2 rounded-lg bg-gray-800 text-white px-3 py-2 text-xs shadow hover:bg-black/80 transition"
+                    >
+                      <Pencil className="w-4 h-4" />
+                      Editar pago
+                    </Link>
+                  ) : (
+                    <>
+                      <button
+                        disabled
+                        className="inline-flex items-center gap-2 rounded-lg bg-gray-200 text-gray-500 px-3 py-2 text-xs cursor-not-allowed"
+                        title="Solo los administradores pueden editar el pago"
+                      >
+                        <Pencil className="w-4 h-4" />
+                        Editar pago
+                      </button>
+                      <span className="text-xs text-amber-600">
+                        Solo administradores pueden editar
+                      </span>
+                    </>
+                  )}
+                </div>
+              ) : (
+                <Link
+                  to={`/odontologo/citas/${cita.id_cita}/registrar-pago`}
+                  className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 text-white px-3 py-2 text-xs shadow hover:bg-emerald-700 transition"
+                >
+                  <DollarSign className="w-4 h-4" />
+                  Registrar pago
+                </Link>
+              )
+            ) : ["pendiente", "confirmada", "mantenimiento"].includes(
+                cita.estado?.toLowerCase() ?? ""
+              ) ? (
+              <button
+                disabled
+                className="inline-flex items-center gap-2 rounded-lg bg-gray-200 text-gray-500 px-3 py-2 text-xs cursor-not-allowed"
+              >
+                <DollarSign className="w-4 h-4" />
+                Registrar pago
+              </button>
+            ) : null}
+          </div>
+
+          {/* Contenido interno de la card */}
+          {!pago || !pago.id_pago_cita ? (
+            <div className="rounded-lg border bg-amber-50 text-amber-900 px-3 py-2 text-sm">
+              Aún no se ha registrado el pago de esta cita.
+            </div>
+          ) : (
+            <div className="grid md:grid-cols-2 gap-4">
+              <div className="border rounded-lg p-3">
+                <div className="text-xs text-gray-500">Monto</div>
+                <div className="font-medium">${pago.monto ?? "—"}</div>
+              </div>
+
+              <div className="border rounded-lg p-3">
+                <div className="text-xs text-gray-500">Método</div>
+                <div className="font-medium capitalize">
+                  {pago.metodo_pago ?? "—"}
+                </div>
+              </div>
+
+              <div className="border rounded-lg p-3">
+                <div className="text-xs text-gray-500">Fecha de pago</div>
+                <div className="font-medium">
+                  {pago.fecha_pago
+                    ? new Date(pago.fecha_pago).toLocaleString("es-EC")
+                    : "—"}
+                </div>
+              </div>
+
+              <div className="border rounded-lg p-3">
+                <div className="text-xs text-gray-500">Observación</div>
+                <div className="whitespace-pre-wrap">
+                  {pago.observacion || "—"}
+                </div>
+              </div>
+
+              {/* Motivo de reembolso - solo si está reembolsado */}
+              {pago.estado_pago === "reembolsado" && (
+                <>
+                  {pago.motivo_reembolso && (
+                    <div className="border rounded-lg p-3 md:col-span-2 bg-amber-50 border-amber-200">
+                      <div className="text-xs text-amber-700 font-semibold flex items-center gap-1 mb-1">
+                        <Info className="w-4 h-4" />
+                        Motivo del Reembolso
+                      </div>
+                      <div className="text-sm text-amber-900 whitespace-pre-wrap">
+                        {pago.motivo_reembolso}
+                      </div>
+                      {pago.reembolsado_en && (
+                        <div className="text-xs text-amber-600 mt-2">
+                          Reembolsado el: {new Date(pago.reembolsado_en).toLocaleString("es-EC", {
+                            dateStyle: "medium",
+                            timeStyle: "short"
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+
+              {pago.comprobante &&
+                (() => {
+                  const comprobanteURL = buildMediaURL(pago.comprobante);
+                  if (!comprobanteURL) return null;
+                  const downloadName = filenameFromUrl(comprobanteURL);
+
+                  const handleDownload = async (e: React.MouseEvent) => {
+                    e.preventDefault();
+                    try {
+                      const response = await fetch(comprobanteURL);
+                      const blob = await response.blob();
+                      const url = window.URL.createObjectURL(blob);
+                      const link = document.createElement('a');
+                      link.href = url;
+                      link.download = downloadName;
+                      document.body.appendChild(link);
+                      link.click();
+                      document.body.removeChild(link);
+                      window.URL.revokeObjectURL(url);
+                    } catch (error) {
+                      console.error('Error al descargar:', error);
+                      // Fallback: abrir en nueva pestaña
+                      window.open(comprobanteURL, '_blank');
+                    }
+                  };
+
+                  return (
+                    <div className="border rounded-lg p-3 md:col-span-2">
+                      {/* Título + botón negro a la derecha */}
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="text-xs text-gray-500">Comprobante</div>
+
+                        <button
+                          onClick={handleDownload}
+                          className="inline-flex items-center gap-2 rounded-lg bg-gray-800 text-white px-3 py-2 text-xs shadow hover:bg-black/80 transition"
+                          title="Descargar comprobante"
+                        >
+                          <Download className="w-4 h-4" />
+                          Descargar comprobante
+                        </button>
+                      </div>
+
+                      {/* Vista previa: intentamos mostrar como imagen */}
+                      <img
+                        src={comprobanteURL}
+                        alt="Comprobante"
+                        className="max-h-64 w-full rounded-lg object-contain"
+                        onError={(e) => {
+                          // Si no es imagen (p.ej. PDF), ocultamos la vista previa
+                          (e.currentTarget as HTMLImageElement).style.display =
+                            "none";
+                        }}
+                      />
+                    </div>
+                  );
+                })()}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

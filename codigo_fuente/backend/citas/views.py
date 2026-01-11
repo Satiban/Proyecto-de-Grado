@@ -16,18 +16,52 @@ from odontologos.models import OdontologoHorario, BloqueoDia
 from .models import (
     Consultorio,
     Cita,
+    PagoCita,
     ESTADO_CANCELADA,
     ESTADO_REALIZADA,
     ESTADO_CONFIRMADA,
     ESTADO_PENDIENTE,
     ESTADO_MANTENIMIENTO
 )
-from .serializers import ConsultorioSerializer, CitaSerializer
+from .serializers import ConsultorioSerializer, CitaSerializer, PagoCitaSerializer, ConfiguracionSerializer
+from rest_framework.views import APIView
+from .models import Configuracion
 from .services.consultorio_service import (
     previewMantenimientoConsultorio,
     applyMantenimientoConsultorio,
     applyReactivacionConsultorio,
 )
+
+from citas.utils import subir_comprobante_cloudinary, obtener_public_id
+from cloudinary.uploader import destroy
+
+class ConfiguracionView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        config = Configuracion.get_config()
+        serializer = ConfiguracionSerializer(config)
+        return Response(serializer.data)
+
+    def patch(self, request):
+        # Solo roles 1 y 4
+        _requireConfigAdmin(request.user)
+
+        config = Configuracion.get_config()
+        serializer = ConfiguracionSerializer(config, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    def put(self, request):
+        # Solo roles 1 y 4
+        _requireConfigAdmin(request.user)
+
+        config = Configuracion.get_config()
+        serializer = ConfiguracionSerializer(config, data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
 
 
 # -------- Config & Helpers --------
@@ -37,52 +71,49 @@ ROL_PACIENTE   = 2
 ROL_ODONTOLOGO = 3
 ROL_ADMIN_CLIN = 4
 
-# Ventana de confirmación para PACIENTE
-CONFIRM_FROM_HOURS  = 24
-CONFIRM_UNTIL_HOURS = 12
+def get_config():
+    return Configuracion.get_config()
 
-# Auto-confirmación al crear si faltan menos de este umbral (horas)
-AUTO_CONFIRM_LT_HOURS = 24
-
-# Límites de agendamiento PACIENTE
-MAX_CITAS_SEMANA = 5
-MAX_CITAS_DIA    = 1
-
-# Cooldown (días) tras cancelación hecha por PACIENTE con ese odontólogo
-COOLDOWN_DIAS = 7
-
-
-# ==== Helpers (camelCase) con alias para compatibilidad ====
 def userRole(user) -> int | None:
     return getattr(user, "id_rol_id", None)
-_user_role = userRole  # alias
 
 def isPatient(user) -> bool:
     return userRole(user) == ROL_PACIENTE
-_is_patient = isPatient  # alias
 
 def isStafflike(user) -> bool:
     return userRole(user) in {ROL_SUPERADMIN, ROL_ODONTOLOGO, ROL_ADMIN_CLIN}
-_is_stafflike = isStafflike  # alias
+
+def _requireConfigAdmin(user):
+    role = getattr(user, "id_rol_id", None)
+    if role not in {ROL_SUPERADMIN, ROL_ADMIN_CLIN}:
+        raise PermissionDenied("No tienes permisos para modificar las configuraciones del sistema.")
+
+def isPatientMode(request, user) -> bool:
+    """
+    Modo PACIENTE si:
+    - El usuario tiene rol de paciente, o
+    - La URL empieza con /api/v1/citas/paciente/
+    Esto permite que un admin clínico usando la app del paciente
+    siga teniendo límites de paciente.
+    """
+    path = request.path or ""
+    return path.startswith("/api/v1/citas/paciente/") or isPatient(user)
+
 
 def fmtHhmm(t: time | None) -> str | None:
     return t.strftime("%H:%M") if t else None
-_fmt_hhmm = fmtHhmm  # alias
 
 def nowAware():
     try:
         return make_aware(_dt.now())
     except Exception:
         return _dt.now()
-_nowaware = nowAware  # alias
-
 def hoursUntil(fecha, hora) -> float | None:
     if not (fecha and hora):
         return None
     target = _dt.combine(fecha, hora)
     now = nowAware()
     return (target - now.replace(tzinfo=None)).total_seconds() / 3600.0
-_hours_until = hoursUntil  # alias
 
 def buildSlotsFromInterval(start: time, end: time) -> list[str]:
     """Genera HH:MM cada 1h desde 'start' (incl) hasta 'end' (excl), saltando 13:00 y 14:00."""
@@ -94,7 +125,6 @@ def buildSlotsFromInterval(start: time, end: time) -> list[str]:
             out.append(cur.strftime("%H:%M"))
         cur += timedelta(hours=1)
     return out
-_build_slots_from_interval = buildSlotsFromInterval  # alias
 
 def slotsHorariosParaFecha(fechaIso: str, idOdontologo: int) -> list[str]:
     """Slots a partir de horarios vigentes del odontólogo para el día de semana dado."""
@@ -102,7 +132,7 @@ def slotsHorariosParaFecha(fechaIso: str, idOdontologo: int) -> list[str]:
         d = _date.fromisoformat(fechaIso)
     except Exception:
         return []
-    dow = d.weekday()  # Lunes=0 .. Domingo=6
+    dow = d.weekday()
 
     qs = (
         OdontologoHorario.objects
@@ -117,7 +147,7 @@ def slotsHorariosParaFecha(fechaIso: str, idOdontologo: int) -> list[str]:
 _slots_horarios_para_fecha = slotsHorariosParaFecha  # alias
 
 def fechaBloqueada(fechaIso: str, idOdontologo: int) -> bool:
-    """True si la fecha está bloqueada (global o del odontólogo), incluye recurrentes anuales."""
+    # True si la fecha está bloqueada (global o del odontólogo), incluye recurrentes anuales
     try:
         d = _date.fromisoformat(fechaIso)
     except Exception:
@@ -128,11 +158,9 @@ def fechaBloqueada(fechaIso: str, idOdontologo: int) -> bool:
     qScope = Q(id_odontologo__isnull=True) | Q(id_odontologo_id=idOdontologo)
 
     return BloqueoDia.objects.filter((qBase | qRec) & qScope).exists()
-_fecha_bloqueada = fechaBloqueada  # alias
 
 def bloqueoDetalle(fechaIso: str, idOdontologo: int | None):
     """
-    Devuelve (bloqueado: bool, motivo: str | None).
     Si hay bloqueo por odontólogo y global el mismo día, prioriza el motivo del odontólogo.
     Si idOdontologo es None, busca solo bloqueos globales.
     Incluye recurrentes anuales.
@@ -170,7 +198,7 @@ _bloqueo_detalle = bloqueoDetalle  # alias
 def pacienteIdFromUser(user) -> int | None:
     """
     Devuelve id_paciente del usuario autenticado (o None si no es paciente).
-    Tolera distintos nombres de PK del usuario (id_usuario, id, pk).
+    Tolera distintos nombres de PK del usuario
     """
     userIds = [
         getattr(user, "id_usuario", None),
@@ -189,14 +217,12 @@ def pacienteIdFromUser(user) -> int | None:
         if pid:
             return pid
     return None
-_paciente_id_from_user = pacienteIdFromUser  # alias
 
 def semanaInicioFin(d):
     # Semana Lunes–Domingo para el conteo
     monday = d - timedelta(days=d.weekday())
     sunday = monday + timedelta(days=6)
     return monday, sunday
-_semana_inicio_fin = semanaInicioFin  # alias
 
 def monthStartEnd(year: int, month: int) -> tuple[_date, _date]:
     """Primer y último día (incl.) del mes dado."""
@@ -206,7 +232,6 @@ def monthStartEnd(year: int, month: int) -> tuple[_date, _date]:
     else:
         end = _date(year, month + 1, 1) - timedelta(days=1)
     return start, end
-_month_start_end = monthStartEnd  # alias
 
 
 # -------- ViewSets --------
@@ -319,6 +344,7 @@ class CitaViewSet(viewsets.ModelViewSet):
             "id_paciente__id_usuario",
             "id_odontologo__id_usuario",
             "id_consultorio",
+            "pago",
         )
         .order_by("-fecha", "-hora")
     )
@@ -371,6 +397,13 @@ class CitaViewSet(viewsets.ModelViewSet):
         elif end:
             baseQs = baseQs.filter(fecha__lte=end)
 
+        mine = self.request.query_params.get("mine")
+        if mine == "1":
+            pid = pacienteIdFromUser(self.request.user)
+            if pid:
+                return baseQs.filter(id_paciente_id=pid)
+            return Cita.objects.none()
+
         # --- Blindaje: si es PACIENTE (rol=2), solo ve sus citas ---
         userRoleId = getattr(self.request.user, "id_rol_id", None)
         if userRoleId == ROL_PACIENTE:
@@ -386,10 +419,24 @@ class CitaViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         """Si el usuario es PACIENTE, aplicar límites; staff/odo/admin sin restricciones."""
         user = self.request.user
-        if isPatient(user):
+        config = get_config()
+        if isPatientMode(self.request, user):
             myPid = pacienteIdFromUser(user)
             if not myPid:
                 raise ValidationError({"detail": "Usuario no asociado a un paciente válido."})
+            
+            # === VALIDACIONES ===
+            max_activas = getattr(config, 'max_citas_activas', 1) or 1
+
+            citas_activas_count = Cita.objects.filter(
+                id_paciente_id=myPid,
+                estado__in=[ESTADO_PENDIENTE, ESTADO_CONFIRMADA],
+            ).count()
+
+            if citas_activas_count >= max_activas:
+                raise ValidationError({
+                    "detail": f"Solo puedes tener {max_activas} cita(s) activa(s) a la vez."
+                })
 
             vData = dict(serializer.validated_data)
             fecha = vData.get("fecha")
@@ -397,26 +444,17 @@ class CitaViewSet(viewsets.ModelViewSet):
             idOdontologo = vData.get("id_odontologo")
             odontologoPk = getattr(idOdontologo, "pk", idOdontologo)
 
-            # 1) Máx. 1 cita por día (excluye canceladas y mantenimiento)
+            # 1) Máx. N citas por día (excluye canceladas y mantenimiento)
             if fecha:
-                existeMismoDia = Cita.objects.filter(
+                max_citas_dia = getattr(config, 'max_citas_dia', 1) or 1
+                citas_mismo_dia = Cita.objects.filter(
                     id_paciente_id=myPid,
                     fecha=fecha,
-                ).exclude(estado__in=[ESTADO_CANCELADA, ESTADO_MANTENIMIENTO]).exists()
-                if existeMismoDia:
-                    raise ValidationError({"fecha": "Solo puedes agendar 1 cita por día."})
-
-            # 2) Máx. 5 citas por semana (excluye canceladas y mantenimiento)
-            if fecha:
-                ini, fin = semanaInicioFin(fecha)
-                countSemana = Cita.objects.filter(
-                    id_paciente_id=myPid,
-                    fecha__range=[ini, fin],
                 ).exclude(estado__in=[ESTADO_CANCELADA, ESTADO_MANTENIMIENTO]).count()
-                if countSemana >= MAX_CITAS_SEMANA:
-                    raise ValidationError({"fecha": f"Solo puedes agendar {MAX_CITAS_SEMANA} citas por semana."})
+                if citas_mismo_dia >= max_citas_dia:
+                    raise ValidationError({"fecha": f"Solo puedes agendar {max_citas_dia} cita(s) por día."})
 
-            # 3) Una cita activa (pendiente/confirmada) por odontólogo
+            # 2) Una cita activa (pendiente/confirmada) por odontólogo
             if odontologoPk:
                 conflict = Cita.objects.filter(
                     id_paciente_id=myPid,
@@ -426,8 +464,9 @@ class CitaViewSet(viewsets.ModelViewSet):
                 if conflict:
                     raise ValidationError({"id_odontologo": "Ya tienes una cita activa con este odontólogo."})
 
-                # 4) Cooldown tras cancelación hecha por PACIENTE (últimos COOLDOWN_DIAS)
-                hace = timezone.now() - timedelta(days=COOLDOWN_DIAS)
+                # 3) Cooldown tras cancelación hecha por PACIENTE (últimos cooldown_dias)
+                cooldown_dias = config.cooldown_dias or 0
+                hace = timezone.now() - timedelta(days=cooldown_dias)
                 tieneCancelRecienteMismoOdo = Cita.objects.filter(
                     id_paciente_id=myPid,
                     id_odontologo_id=odontologoPk,
@@ -437,13 +476,14 @@ class CitaViewSet(viewsets.ModelViewSet):
                 ).exists()
                 if tieneCancelRecienteMismoOdo:
                     raise ValidationError({
-                        "id_odontologo": f"No puedes autogendar con este odontólogo durante {COOLDOWN_DIAS} días después de cancelar. Comunícate con el consultorio."
+                        "id_odontologo": f"No puedes autogendar con este odontólogo durante {cooldown_dias} días después de cancelar. Comunícate con el consultorio."
                     })
 
-            # === Estado inicial según la anticipación (< 24h => confirmada) ===
+            # === Estado inicial según la anticipación (< horas_autoconfirmar => confirmada) ===
+            horas_autoconfirmar = config.horas_autoconfirmar or 24
             horas = hoursUntil(fecha, hora)
             estadoInicial = ESTADO_PENDIENTE
-            if horas is not None and horas < AUTO_CONFIRM_LT_HOURS:
+            if horas is not None and horas < horas_autoconfirmar:
                 estadoInicial = ESTADO_CONFIRMADA
 
             serializer.save(
@@ -454,19 +494,29 @@ class CitaViewSet(viewsets.ModelViewSet):
         else:
             # Staff/Odontólogo/Admin sin límites
             vData = dict(serializer.validated_data)
+            horas_autoconfirmar = config.horas_autoconfirmar or 24
             horas = hoursUntil(vData.get("fecha"), vData.get("hora"))
             estadoInicial = ESTADO_PENDIENTE
-            if horas is not None and horas < AUTO_CONFIRM_LT_HOURS:
+            if horas is not None and horas < horas_autoconfirmar:
                 estadoInicial = ESTADO_CONFIRMADA
 
             serializer.save(estado=estadoInicial)
 
     def perform_update(self, serializer):
-        """PACIENTE no puede cambiar citas ajenas ni saltarse restricciones."""
+        """PACIENTE no puede cambiar citas ajenas ni saltarse restricciones.
+        Además, si se cambia fecha/hora o estado=cancelada, se registran campos de auditoría.
+        """
         user = self.request.user
         instance: Cita = self.get_object()
+        config = get_config()
 
-        if isPatient(user):
+        # Detectar qué está cambiando
+        data = serializer.validated_data
+        changingDate = ("fecha" in data) or ("hora" in data)
+        changingEstadoToCancel = data.get("estado") == ESTADO_CANCELADA
+
+        # ===================== MODO PACIENTE =====================
+        if isPatientMode(self.request, user):
             myPid = pacienteIdFromUser(user)
             if not myPid:
                 raise PermissionDenied("No es un paciente válido.")
@@ -476,43 +526,65 @@ class CitaViewSet(viewsets.ModelViewSet):
             # Bloqueos según estado actual
             if instance.estado == ESTADO_CONFIRMADA:
                 blockedFields = {"fecha", "hora", "id_odontologo", "id_consultorio", "estado"}
-                if any(f in serializer.validated_data for f in blockedFields):
-                    raise ValidationError({"detail": "No puedes modificar una cita confirmada desde la app. Llama al consultorio."})
+                if any(f in data for f in blockedFields):
+                    raise ValidationError({
+                        "detail": "No puedes modificar una cita confirmada desde la app. Llama al consultorio."
+                    })
 
             if instance.estado in (ESTADO_CANCELADA, ESTADO_MANTENIMIENTO):
-                if any(f in serializer.validated_data for f in {"fecha", "hora", "estado"}):
-                    raise ValidationError({"detail": "No puedes modificar una cita cancelada o en mantenimiento."})
+                if any(f in data for f in {"fecha", "hora", "estado"}):
+                    raise ValidationError({
+                        "detail": "No puedes modificar una cita cancelada o en mantenimiento."
+                    })
 
-            # Reprogramación vía PATCH (cambio de fecha/hora)
-            changingDate = ("fecha" in serializer.validated_data) or ("hora" in serializer.validated_data)
+            # ---- Reprogramación cambio de fecha/hora ----
             if changingDate:
-                if instance.reprogramaciones >= 1:
-                    raise ValidationError({"detail": "Solo puedes reprogramar una vez."})
+                max_reprogramaciones = getattr(config, 'max_reprogramaciones', 1) or 1
+                if instance.reprogramaciones >= max_reprogramaciones:
+                    raise ValidationError({
+                        "detail": f"Solo puedes reprogramar {max_reprogramaciones} vez/veces."
+                    })
 
-                nuevaFecha = serializer.validated_data.get("fecha", instance.fecha)
+                nuevaFecha = data.get("fecha", instance.fecha)
 
-                # 1 por día
-                existeMismoDia = Cita.objects.filter(
+                # N por día
+                max_citas_dia = getattr(config, 'max_citas_dia', 1) or 1
+                citas_mismo_dia = Cita.objects.filter(
                     id_paciente_id=myPid,
                     fecha=nuevaFecha,
-                ).exclude(pk=instance.pk).exclude(estado__in=[ESTADO_CANCELADA, ESTADO_MANTENIMIENTO]).exists()
-                if existeMismoDia:
-                    raise ValidationError({"fecha": "Solo puedes agendar 1 cita por día."})
+                ).exclude(pk=instance.pk).exclude(
+                    estado__in=[ESTADO_CANCELADA, ESTADO_MANTENIMIENTO]
+                ).count()
+                if citas_mismo_dia >= max_citas_dia:
+                    raise ValidationError({
+                        "fecha": f"Solo puedes agendar {max_citas_dia} cita(s) por día."
+                    })
 
-                # 5 por semana
-                ini, fin = semanaInicioFin(nuevaFecha)
-                countSemana = Cita.objects.filter(
-                    id_paciente_id=myPid,
-                    fecha__range=[ini, fin],
-                ).exclude(estado__in=[ESTADO_CANCELADA, ESTADO_MANTENIMIENTO]).exclude(pk=instance.pk).count()
-                if countSemana >= MAX_CITAS_SEMANA:
-                    raise ValidationError({"fecha": f"Solo puedes agendar {MAX_CITAS_SEMANA} citas por semana."})
+                # Incrementar contador de reprogramaciones
+                data["reprogramaciones"] = (instance.reprogramaciones or 0) + 1
 
-                serializer.validated_data["reprogramaciones"] = (instance.reprogramaciones or 0) + 1
+                # Registrar auditoría de reprogramación
+                data["reprogramada_en"] = timezone.now()
+                data["reprogramada_por_rol"] = userRole(user)
 
+            # El paciente NO cancela por aquí, solo por el endpoint /cancelar
             serializer.save(id_paciente_id=myPid)
+
+        # ===================== MODO STAFF / ODONTÓLOGO / ADMIN =====================
         else:
+            # Si cambian fecha/hora también consideramos reprogramación
+            if changingDate:
+                data["reprogramaciones"] = (instance.reprogramaciones or 0) + 1
+                data["reprogramada_en"] = timezone.now()
+                data["reprogramada_por_rol"] = userRole(user)
+
+            # Si cambian estado a cancelada desde el update normal
+            if changingEstadoToCancel and instance.estado != ESTADO_CANCELADA:
+                data["cancelada_en"] = timezone.now()
+                data["cancelada_por_rol"] = userRole(user)
+
             serializer.save()
+
 
     @action(detail=False, methods=["get"], url_path="disponibilidad")
     def disponibilidad(self, request):
@@ -576,9 +648,6 @@ class CitaViewSet(viewsets.ModelViewSet):
             "disponibles": disponibles,
         }, status=status.HTTP_200_OK)
 
-
-    # ===================== NUEVOS ENDPOINTS =====================
-
     @action(detail=False, methods=["get"], url_path="dia-metadata")
     def dia_metadata(self, request):
         """
@@ -586,8 +655,6 @@ class CitaViewSet(viewsets.ModelViewSet):
           - slots_totales / slots_ocupados / lleno (solo si se pasa id_odontologo)
           - bloqueado: True si día está bloqueado (global u odontólogo)
           - motivo_bloqueo: texto del bloqueo (prioriza del odontólogo; si no, global)
-        Modo odontólogo: ?fecha=YYYY-MM-DD&id_odontologo=ID[&id_consultorio=ID]
-        Modo global (admin): ?fecha=YYYY-MM-DD  (slots_* = 0, lleno=False, bloqueo global)
         """
         fecha = request.query_params.get("fecha")
         idOdontologoParam = request.query_params.get("id_odontologo")
@@ -656,19 +723,7 @@ class CitaViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="resumen-mensual")
     def resumen_mensual(self, request):
-        """
-        Resumen por día del mes (modo odontólogo o global):
-          Retorna { "YYYY-MM-DD": { "total_citas": int, "slots_totales": int, "slots_ocupados": int, "lleno": bool, "bloqueado": bool } }
-        Params requeridos: ?year=YYYY&month=M
-        Opcional:
-          - &id_odontologo=ID  -> filtra por odontólogo y calcula slots/lleno y bloqueos (global u odo)
-          - &id_consultorio=ID -> filtro adicional
-        Reglas:
-          - total_citas: cuenta TODAS las citas del día (según filtros), todos los estados
-          - slots_ocupados: excluye canceladas y mantenimiento (solo si hay id_odontologo)
-          - slots_totales: horarios del odontólogo (solo si hay id_odontologo)
-          - bloqueado: global si no hay odontólogo; global u odontólogo si lo hay
-        """
+        # Resumen por día del mes (modo odontólogo o global):
         try:
             year = int(request.query_params.get("year", ""))
             month = int(request.query_params.get("month", ""))
@@ -735,11 +790,9 @@ class CitaViewSet(viewsets.ModelViewSet):
         """
         Lista de días bloqueados en un rango [from, to].
         Params:
-          - from=YYYY-MM-DD (requerido)
-          - to=YYYY-MM-DD   (requerido)
-          - id_odontologo (opcional): si se pasa, mezcla bloqueos del odontólogo + globales.
-                                      si no se pasa, devuelve SOLO bloqueos globales.
-        Respuesta: [{"fecha": "YYYY-MM-DD", "motivo": str | null}, ...]  (único por fecha)
+            - from=YYYY-MM-DD (requerido)
+            - to=YYYY-MM-DD   (requerido)
+            - id_odontologo (opcional): si se pasa, mezcla bloqueos del odontólogo + globales.
         """
         paramFrom = request.query_params.get("from")
         paramTo = request.query_params.get("to")
@@ -799,6 +852,58 @@ class CitaViewSet(viewsets.ModelViewSet):
             [{"fecha": k, "motivo": v} for k, v in sorted(out.items(), key=lambda kv: kv[0])],
             status=status.HTTP_200_OK
         )
+    
+    @action(detail=False, methods=["get"], url_path="agenda-completa")
+    def agenda_completa(self, request):
+        fecha = request.query_params.get("fecha")
+        year = request.query_params.get("year")
+        month = request.query_params.get("month")
+        idOdontologo = request.query_params.get("id_odontologo")
+        idConsultorio = request.query_params.get("id_consultorio")
+        estado = request.query_params.get("estado")
+
+        if not (fecha and year and month):
+            return Response({"detail": "Parámetros requeridos: fecha, year, month"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            year = int(year)
+            month = int(month)
+        except Exception:
+            return Response({"detail": "Parámetros inválidos: year, month"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 1) Citas del día
+        params = {"fecha": fecha}
+        if idOdontologo: params["id_odontologo"] = idOdontologo
+        if idConsultorio: params["id_consultorio"] = idConsultorio
+        if estado: params["estado"] = estado
+        citas_qs = self.get_queryset().filter(**params)
+        citas_data = CitaSerializer(citas_qs, many=True).data
+
+        # 2) Metadata del día (reutilizando tu lógica)
+        request._request.GET = request._request.GET.copy()  # evitar error QueryDict
+        request._request.GET.update({"fecha": fecha})
+        dia_meta_resp = self.dia_metadata(request)
+        dia_meta = dia_meta_resp.data if hasattr(dia_meta_resp, "data") else {}
+
+        # 3) Resumen mensual
+        request._request.GET.update({"year": str(year), "month": str(month)})
+        if idOdontologo: request._request.GET["id_odontologo"] = str(idOdontologo)
+        if idConsultorio: request._request.GET["id_consultorio"] = str(idConsultorio)
+        resumen_resp = self.resumen_mensual(request)
+        resumen = resumen_resp.data if hasattr(resumen_resp, "data") else {}
+
+        # 4) Bloqueos del mes
+        start, end = monthStartEnd(year, month)
+        request._request.GET.update({"from": start.isoformat(), "to": end.isoformat()})
+        bloqueos_resp = self.bloqueos_mes(request)
+        bloqueos = bloqueos_resp.data if hasattr(bloqueos_resp, "data") else []
+
+        return Response({
+            "citas": citas_data,
+            "dia_meta": dia_meta,
+            "resumen_mes": resumen,
+            "bloqueos": bloqueos,
+        }, status=status.HTTP_200_OK)
 
     # -------- Acciones para el PACIENTE autenticado --------
 
@@ -876,9 +981,9 @@ class CitaViewSet(viewsets.ModelViewSet):
     def resumen_para_paciente(self, request):
         """
         Resumen del historial del paciente autenticado:
-          - citas_completadas: total en estado 'realizada'
-          - ultima_visita: fecha de la última 'realizada'
-          - ultima_observacion: texto de esa última (si existe)
+            - citas_completadas: total en estado 'realizada'
+            - ultima_visita: fecha de la última 'realizada'
+            - ultima_observacion: texto de esa última (si existe)
         """
         pid = pacienteIdFromUser(request.user)
         if not pid:
@@ -909,22 +1014,27 @@ class CitaViewSet(viewsets.ModelViewSet):
     def confirmar(self, request, pk=None):
         """
         Marca la cita como 'confirmada'.
-        - Paciente: solo entre 24h y 12h antes.
+        - Paciente: solo entre confirm_from_hours y confirm_until_hours antes.
         - Staff/Odo/Admin: sin ventana.
         - Nunca si está cancelada, realizada o en mantenimiento.
         """
         citaObj: Cita = self.get_object()
         user = request.user
+        config = get_config()
 
         if citaObj.estado in (ESTADO_CANCELADA, ESTADO_REALIZADA, ESTADO_MANTENIMIENTO):
             return Response({"detail": "La cita no se puede confirmar en su estado actual."}, status=status.HTTP_400_BAD_REQUEST)
 
-        if isPatient(user):
+        if isPatientMode(request, user):
             hrs = hoursUntil(citaObj.fecha, citaObj.hora)
             if hrs is None:
                 return Response({"detail": "Cita sin fecha/hora válidas."}, status=status.HTTP_400_BAD_REQUEST)
-            if not (CONFIRM_UNTIL_HOURS <= hrs <= CONFIRM_FROM_HOURS):
-                return Response({"detail": f"Solo puedes confirmar entre {CONFIRM_FROM_HOURS}h y {CONFIRM_UNTIL_HOURS}h antes."}, status=status.HTTP_400_BAD_REQUEST)
+            horas_confirmar_desde = config.horas_confirmar_desde or 24
+            horas_confirmar_hasta = config.horas_confirmar_hasta or 12
+            if not (horas_confirmar_hasta <= hrs <= horas_confirmar_desde):
+                return Response({
+                    "detail": f"Solo puedes confirmar entre {horas_confirmar_desde}h y {horas_confirmar_hasta}h antes."
+                }, status=status.HTTP_400_BAD_REQUEST)
 
         citaObj.estado = ESTADO_CONFIRMADA
         citaObj.save(update_fields=["estado"])
@@ -947,9 +1057,17 @@ class CitaViewSet(viewsets.ModelViewSet):
         if citaObj.estado == ESTADO_CANCELADA:
             return Response({"id_cita": citaObj.id_cita, "estado": citaObj.estado}, status=status.HTTP_200_OK)
 
-        if isPatient(user):
+        # Verificar si el usuario es el paciente de esta cita específica
+        myPid = pacienteIdFromUser(user)
+        esElPaciente = myPid and myPid == citaObj.id_paciente_id
+
+        # Si es el paciente de la cita O está en modo paciente
+        if esElPaciente or isPatientMode(request, user):
             if citaObj.estado == ESTADO_CONFIRMADA:
-                return Response({"detail": "No puedes cancelar una cita confirmada desde la app. Llama al consultorio."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({
+                    "detail": "No puedes cancelar una cita confirmada desde la app. Llama al consultorio."
+                }, status=status.HTTP_400_BAD_REQUEST)
+
             citaObj.estado = ESTADO_CANCELADA
             citaObj.cancelada_en = timezone.now()
             citaObj.cancelada_por_rol = ROL_PACIENTE
@@ -966,11 +1084,12 @@ class CitaViewSet(viewsets.ModelViewSet):
     def reprogramar(self, request, pk=None):
         """
         Reprograma fecha/hora (y opcional consultorio).
-        - Paciente: solo si no está confirmada/cancelada/mantenimiento; máx. 1 vez; respeta 1/día y 5/semana.
+        - Paciente: solo si no está confirmada/cancelada/mantenimiento; máx. 1 vez; respeta 1/día.
         - Staff/Odo/Admin: sin límites.
         """
         citaObj: Cita = self.get_object()
-        user = self.request.user
+        user = request.user
+        config = get_config()
 
         nuevaFechaParam = request.data.get("fecha")
         nuevaHoraParam = request.data.get("hora")
@@ -979,61 +1098,340 @@ class CitaViewSet(viewsets.ModelViewSet):
         if not (nuevaFechaParam and nuevaHoraParam):
             return Response({"detail": "Se requiere fecha y hora."}, status=status.HTTP_400_BAD_REQUEST)
 
+        # ----- Estados que no permiten reprogramación -----
         if citaObj.estado in (ESTADO_REALIZADA, ESTADO_CANCELADA, ESTADO_MANTENIMIENTO):
-            return Response({"detail": "No se puede reprogramar una cita cancelada, realizada o en mantenimiento."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"detail": "No se puede reprogramar una cita cancelada, realizada o en mantenimiento."},
+                            status=status.HTTP_400_BAD_REQUEST)
 
-        if isPatient(user):
+        # ===================== MODO PACIENTE =====================
+        if isPatientMode(request, user):
             myPid = pacienteIdFromUser(user)
             if not myPid or myPid != citaObj.id_paciente_id:
-                return Response({"detail": "No puedes reprogramar citas de otro paciente."}, status=status.HTTP_403_FORBIDDEN)
+                return Response({"detail": "No puedes reprogramar citas de otro paciente."},
+                                status=status.HTTP_403_FORBIDDEN)
 
             if citaObj.estado == ESTADO_CONFIRMADA:
-                return Response({"detail": "No puedes reprogramar una cita confirmada desde la app. Llama al consultorio."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"detail": "No puedes reprogramar una cita confirmada desde la app. Llama al consultorio."},
+                                status=status.HTTP_400_BAD_REQUEST)
 
-            if (citaObj.reprogramaciones or 0) >= 1:
-                return Response({"detail": "Solo puedes reprogramar una vez."}, status=status.HTTP_400_BAD_REQUEST)
+            # ---- límite de reprogramaciones ----
+            max_reprog = getattr(config, "max_reprogramaciones", 1) or 1
+            if (citaObj.reprogramaciones or 0) >= max_reprog:
+                return Response({"detail": f"Solo puedes reprogramar {max_reprog} vez/veces."},
+                                status=status.HTTP_400_BAD_REQUEST)
 
+            # ---- validar fecha ----
             try:
                 nuevaFechaObj = _date.fromisoformat(str(nuevaFechaParam))
             except Exception:
                 return Response({"fecha": "Fecha inválida (YYYY-MM-DD)."}, status=status.HTTP_400_BAD_REQUEST)
 
+            # ---- 1 cita por día ----
             existeMismoDia = Cita.objects.filter(
                 id_paciente_id=myPid,
                 fecha=nuevaFechaObj,
-            ).exclude(pk=citaObj.pk).exclude(estado__in=[ESTADO_CANCELADA, ESTADO_MANTENIMIENTO]).exists()
+            ).exclude(pk=citaObj.pk).exclude(
+                estado__in=[ESTADO_CANCELADA, ESTADO_MANTENIMIENTO]
+            ).exists()
+
             if existeMismoDia:
                 return Response({"fecha": "Solo puedes agendar 1 cita por día."}, status=status.HTTP_400_BAD_REQUEST)
 
-            ini, fin = semanaInicioFin(nuevaFechaObj)
-            countSemana = Cita.objects.filter(
-                id_paciente_id=myPid,
-                fecha__range=[ini, fin],
-            ).exclude(estado__in=[ESTADO_CANCELADA, ESTADO_MANTENIMIENTO]).exclude(pk=citaObj.pk).count()
-            if countSemana >= MAX_CITAS_SEMANA:
-                return Response({"fecha": f"Solo puedes agendar {MAX_CITAS_SEMANA} citas por semana."}, status=status.HTTP_400_BAD_REQUEST)
-
             citaObj.reprogramaciones = (citaObj.reprogramaciones or 0) + 1
 
+        # ===================== APLICAR NUEVA FECHA/HORA =====================
         try:
             citaObj.fecha = _date.fromisoformat(str(nuevaFechaParam))
         except Exception:
             return Response({"fecha": "Fecha inválida (YYYY-MM-DD)."}, status=status.HTTP_400_BAD_REQUEST)
+
         try:
             hParts = str(nuevaHoraParam).split(":")
             citaObj.hora = time(hour=int(hParts[0]), minute=int(hParts[1]) if len(hParts) > 1 else 0)
         except Exception:
             return Response({"hora": "Hora inválida (HH:MM)."}, status=status.HTTP_400_BAD_REQUEST)
 
+        # ---- Consultorio opcional ----
         if nuevoConsultorioParam:
             try:
                 citaObj.id_consultorio_id = int(nuevoConsultorioParam)
             except Exception:
-                return Response({"id_consultorio": "id_consultorio inválido."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"id_consultorio": "id_consultorio inválido."},
+                                status=status.HTTP_400_BAD_REQUEST)
 
+        citaObj.reprogramada_en = timezone.now()
+        citaObj.reprogramada_por_rol = userRole(user)
+        # Validaciones finales
         citaObj.full_clean()
-        citaObj.save()
+
+        # Guardamos solo los campos relevantes (incluye reprogramaciones)
+        citaObj.save(update_fields=[
+            "fecha",
+            "hora",
+            "id_consultorio",
+            "reprogramaciones",
+            "reprogramada_en",
+            "reprogramada_por_rol",
+            "updated_at",
+        ])
+
         return Response(
-            {"id_cita": citaObj.id_cita, "estado": citaObj.estado, "reprogramaciones": citaObj.reprogramaciones},
+            {
+                "id_cita": citaObj.id_cita,
+                "estado": citaObj.estado,
+                "reprogramaciones": citaObj.reprogramaciones,
+            },
             status=status.HTTP_200_OK
         )
+
+class PagoCitaViewSet(viewsets.ModelViewSet):
+    queryset = (
+        PagoCita.objects
+        .select_related(
+            "id_cita__id_paciente__id_usuario",
+            "id_cita__id_odontologo__id_usuario",
+            "id_cita__id_consultorio",
+        )
+        .order_by("-fecha_pago", "-created_at")
+    )
+    serializer_class = PagoCitaSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        qs = qs.select_related(
+            "id_cita__id_paciente__id_usuario",
+            "id_cita__id_odontologo__id_usuario",
+            "id_cita__id_consultorio",
+        )
+
+        params = self.request.query_params
+
+        idPaciente = params.get("id_paciente")
+        idOdontologo = params.get("id_odontologo")
+        idCita = params.get("id_cita")
+        estado = params.get("estado_pago")
+        fechaDesde = params.get("desde")
+        fechaHasta = params.get("hasta")
+
+        if idPaciente:
+            qs = qs.filter(id_cita__id_paciente_id=idPaciente)
+        if idOdontologo:
+            qs = qs.filter(id_cita__id_odontologo_id=idOdontologo)
+        if idCita:
+            qs = qs.filter(id_cita_id=idCita)
+        if estado:
+            qs = qs.filter(estado_pago=estado)
+        if fechaDesde and fechaHasta:
+            qs = qs.filter(fecha_pago__date__range=[fechaDesde, fechaHasta])
+
+        mine = self.request.query_params.get("mine")
+        if mine == "1":
+            pid = pacienteIdFromUser(self.request.user)
+            if pid:
+                return qs.filter(id_cita__id_paciente_id=pid)
+            return qs.none()
+
+        # Si el usuario autenticado es paciente, limitar sus propios pagos
+        if isPatient(self.request.user):
+            pid = pacienteIdFromUser(self.request.user)
+            if pid:
+                qs = qs.filter(id_cita__id_paciente_id=pid)
+            else:
+                return PagoCita.objects.none()
+
+        return qs
+
+    @transaction.atomic
+    @action(detail=True, methods=["patch"], url_path="reembolsar")
+    def reembolsar(self, request, pk=None):
+        pago: PagoCita = self.get_object()
+        user = request.user
+
+        if isPatient(user):
+            raise PermissionDenied("No tienes permisos para realizar reembolsos.")
+
+        if pago.estado_pago not in (PagoCita.ESTADO_PAGADO, PagoCita.ESTADO_REEMBOLSADO):
+            return Response(
+                {"detail": "Solo se pueden reembolsar pagos en estado 'pagado' o ya reembolsado."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Método solo si viene; si no, mantener el actual
+        metodo_in = request.data.get("metodo_pago") or request.data.get("metodoPago")
+        if metodo_in not in (None, ""):
+            pago.metodo_pago = metodo_in
+        metodo = pago.metodo_pago
+
+        archivo = request.FILES.get("comprobante")
+        remove = request.data.get("remove") == "true"
+
+        if remove and pago.comprobante:
+            public_id = obtener_public_id(pago.comprobante)
+            if public_id:
+                destroy(public_id)
+            pago.comprobante = None
+
+        if archivo:
+            if pago.comprobante:
+                public_id = obtener_public_id(pago.comprobante)
+                if public_id:
+                    destroy(public_id)
+            cedula = pago.id_cita.id_paciente.id_usuario.cedula
+            url_segura = subir_comprobante_cloudinary(archivo, cedula, pago.id_pago_cita)
+            pago.comprobante = url_segura
+
+        motivo = request.data.get("motivo_reembolso") or "Reembolso autorizado por administración"
+        observacion = request.data.get("observacion")
+        pago.estado_pago = PagoCita.ESTADO_REEMBOLSADO
+        if not pago.reembolsado_en:
+            pago.reembolsado_en = timezone.now()
+        pago.motivo_reembolso = motivo
+
+        if observacion is not None:
+            pago.observacion = observacion
+
+        pago.save(update_fields=["estado_pago", "reembolsado_en", "motivo_reembolso", "metodo_pago", "comprobante", "observacion", "updated_at"])
+
+        return Response(
+            {
+                "id_pago_cita": pago.id_pago_cita,
+                "estado_pago": pago.estado_pago,
+                "reembolsado_en": pago.reembolsado_en,
+                "motivo_reembolso": pago.motivo_reembolso,
+                "metodo_pago": pago.metodo_pago,
+                "comprobante": pago.comprobante,
+                "observacion": pago.observacion,
+                "updated_at": pago.updated_at,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @transaction.atomic
+    @action(detail=True, methods=["patch"], url_path="anular")
+    def anular(self, request, pk=None):
+        """
+        Anula un pago registrado por error administrativo.
+        Solo staff/admin.
+        No genera reembolso, solo deja constancia.
+        """
+        pago: PagoCita = self.get_object()
+        user = request.user
+
+        if isPatient(user):
+            raise PermissionDenied("No tienes permisos para anular pagos.")
+
+        if pago.estado_pago != PagoCita.ESTADO_PAGADO:
+            return Response(
+                {"detail": "Solo se pueden anular pagos que estén marcados como 'pagado'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        motivo = request.data.get("observacion") or "Anulación administrativa del pago"
+        pago.estado_pago = PagoCita.ESTADO_PENDIENTE
+        pago.observacion = motivo
+        pago.save(update_fields=["estado_pago", "observacion", "updated_at"])
+
+        return Response(
+            {
+                "id_pago_cita": pago.id_pago_cita,
+                "estado_pago": pago.estado_pago,
+                "observacion": pago.observacion,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @transaction.atomic
+    @action(detail=True, methods=["patch"], url_path="registrar-pago")
+    def registrar_pago(self, request, pk=None):
+        """
+        Marca el pago como 'pagado' y guarda la fecha y comprobante (si aplica).
+        Solo se puede registrar pago de citas realizadas.
+        """
+        pago: PagoCita = self.get_object()
+        user = request.user
+
+        if pago.estado_pago == PagoCita.ESTADO_PAGADO:
+            return Response({"detail": "Este pago ya está registrado como 'pagado'."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if pago.id_cita.estado != ESTADO_REALIZADA:
+            return Response(
+                {"detail": "Solo se pueden registrar pagos de citas en estado 'realizada'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        metodo = request.data.get("metodo_pago")
+        comprobante = request.FILES.get("comprobante")
+        observacion = request.data.get("observacion")
+
+        if metodo:
+            pago.metodo_pago = metodo
+        if comprobante:
+            if pago.comprobante:
+                public_id = obtener_public_id(pago.comprobante)
+                if public_id:
+                    destroy(public_id)
+            try:
+                cedula = pago.id_cita.id_paciente.id_usuario.cedula
+                url_segura = subir_comprobante_cloudinary(
+                    comprobante,
+                    cedula,
+                    pago.id_pago_cita,
+                )
+                pago.comprobante = url_segura
+            except ValidationError as e:
+                return Response({"comprobante": e.detail if hasattr(e, "detail") else e.args}, status=400)
+            except Exception as exc:
+                return Response({"detail": str(exc)}, status=500)
+        if observacion:
+            pago.observacion = observacion
+
+        pago.estado_pago = PagoCita.ESTADO_PAGADO
+        pago.fecha_pago = timezone.now()
+        pago.save()
+
+        return Response(
+            {
+                "id_pago_cita": pago.id_pago_cita,
+                "estado_pago": pago.estado_pago,
+                "fecha_pago": pago.fecha_pago,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @transaction.atomic
+    @action(detail=True, methods=["patch"], url_path="comprobante")
+    def actualizar_comprobante(self, request, pk=None):
+        pago: PagoCita = self.get_object()
+        archivo = request.FILES.get("comprobante")
+        remove = request.data.get("remove") == "true"
+
+        if remove:
+            if pago.comprobante:
+                public_id = obtener_public_id(pago.comprobante)
+                if public_id:
+                    destroy(public_id)
+            pago.comprobante = None
+            pago.save(update_fields=["comprobante", "updated_at"])
+            return Response({"detail": "Comprobante eliminado.", "comprobante": None})
+
+        if not archivo:
+            return Response({"detail": "No se envió comprobante."}, status=400)
+
+        if pago.comprobante:
+            public_id = obtener_public_id(pago.comprobante)
+            if public_id:
+                destroy(public_id)
+
+        try:
+            cedula = pago.id_cita.id_paciente.id_usuario.cedula
+            url_segura = subir_comprobante_cloudinary(archivo, cedula, pago.id_pago_cita)
+        except ValidationError as e:
+            return Response({"comprobante": e.detail if hasattr(e, "detail") else e.args}, status=400)
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=500)
+
+        pago.comprobante = url_segura
+        pago.save(update_fields=["comprobante", "updated_at"])
+
+        return Response({"detail": "Comprobante actualizado.", "comprobante": url_segura})

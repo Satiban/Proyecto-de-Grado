@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import { publicApi } from "../api/publicApi";
 import { Eye, EyeOff } from "lucide-react";
-import logoUrl from "../assets/oralflow-logo.png";
+import logoUrl from "../assets/belladent-logo5.png";
 import toothImg from "../assets/diente-login.png";
 
 export default function ResetPassword() {
@@ -28,7 +28,7 @@ export default function ResetPassword() {
   const [pwd2Touched, setPwd2Touched] = useState(false);
 
   // Reglas de contraseña (mismas del ejemplo)
-  const pwdHasMin = pwd1.length >= 6;
+  const pwdHasMin = pwd1.length >= 8;
   const pwdHasUpper = /[A-Z]/.test(pwd1);
   const pwdHasDigit = /\d/.test(pwd1);
   const pwdStrong = pwdHasMin && pwdHasUpper && pwdHasDigit;
@@ -84,7 +84,15 @@ export default function ResetPassword() {
       let msg = "El enlace es inválido/expiró o la contraseña no es válida.";
       if (typeof data === "string") msg = data;
       else if (data?.detail) msg = data.detail;
-      else if (data?.new_password?.length) msg = data.new_password.join(" ");
+      else if (data?.new_password?.length) {
+        // Si el mensaje es sobre contraseña anterior, mostrarlo claramente
+        const passwordErrors = data.new_password.join(" ");
+        if (passwordErrors.includes("contraseña anterior")) {
+          msg = "Por seguridad, no puedes usar tu contraseña anterior. Elige una contraseña diferente.";
+        } else {
+          msg = passwordErrors;
+        }
+      }
       else if (data?.token?.length) msg = data.token.join(" ");
       else if (data?.uid?.length) msg = data.uid.join(" ");
       setError(msg);
@@ -107,7 +115,7 @@ export default function ResetPassword() {
       <div className="min-h-screen w-full grid grid-cols-1 lg:grid-cols-2">
         <div className="relative flex items-center justify-center px-8 py-10">
           <div className="fixed lg:absolute left-4 top-4 lg:left-8 lg:top-6 z-20">
-            <img src={logoUrl} alt="OralFlow" className="h-16 w-auto" />
+            <img src={logoUrl} alt="OralFlow" className="h-25 w-auto" />
           </div>
           <div className="w-full max-w-md mt-28 lg:mt-24">
             <div className="rounded-2xl shadow-lg border border-gray-100 p-6 bg-white text-center">
@@ -233,7 +241,7 @@ export default function ResetPassword() {
                 {/* Criterios en vivo */}
                 <ul className="mt-2 text-xs space-y-1">
                   <li className={hintColor(pwdHasMin, pwdTouched, pwd1)}>
-                    • Mínimo 6 caracteres
+                    • Mínimo 8 caracteres
                   </li>
                   <li className={hintColor(pwdHasUpper, pwdTouched, pwd1)}>
                     • Al menos 1 mayúscula (A–Z)

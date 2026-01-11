@@ -7,7 +7,6 @@ import {
   Stethoscope,
   FileText,
   CalendarX,
-  Users,
   X,
   Pencil,
   PlusCircle,
@@ -16,8 +15,10 @@ import {
   Trash2,
   AlertTriangle,
   Info,
+  Shield,
 } from "lucide-react";
 import { api } from "../../api/axios";
+import { e164ToLocal, localToE164 } from "../../utils/phoneFormat";
 import { useAuth } from "../../context/AuthContext";
 
 /* ===================== Tipos genéricos ===================== */
@@ -190,18 +191,19 @@ export default function Configuracion() {
   // toasts globales en esta pantalla
   const { toasts, show, remove } = useToasts();
 
-  // ⬇️ Traemos el usuario desde el AuthContext
+  // Traemos el usuario desde el AuthContext
   const { usuario } = useAuth();
   // Puede venir como número (1) o como objeto { id_rol: 1 }
   const roleId =
     typeof usuario?.id_rol === "number"
       ? usuario.id_rol
       : (usuario?.id_rol as any)?.id_rol;
-  const isAdmin = roleId === 1; // ⬅️ solo admins (id_rol = 1)
+  const isAdmin = roleId === 1; // solo admins (id_rol = 1)
 
   const [openEsp, setOpenEsp] = useState(false);
   const [openCon, setOpenCon] = useState(false);
   const [openAnt, setOpenAnt] = useState(false);
+  const [openConfigCitas, setOpenConfigCitas] = useState(false);
 
   return (
     <div className="space-y-6">
@@ -245,11 +247,18 @@ export default function Configuracion() {
             onClick={() => navigate("/admin/bloqueos")}
             actionText="Configurar"
           />
+          <CatalogCard
+            icon={<Settings className="size-6" />}
+            title="Configuración de citas"
+            desc="Ajustar horas de anticipación y reglas de confirmación."
+            onClick={() => setOpenConfigCitas(true)}
+            actionText="Configurar"
+          />
 
-          {/* ⬇️ SOLO para admin (id_rol = 1) */}
+          {/* SOLO para admin (id_rol = 1) */}
           {isAdmin && (
             <CatalogCard
-              icon={<Users className="size-6" />}
+              icon={<Shield className="size-6" />}
               title="Administradores"
               desc="Añadir, editar o gestionar administradores del sistema."
               onClick={() => navigate("/admin/administradores")}
@@ -270,6 +279,12 @@ export default function Configuracion() {
       )}
       {openAnt && (
         <AntecedentesModal onClose={() => setOpenAnt(false)} showToast={show} />
+      )}
+      {openConfigCitas && (
+        <ConfiguracionCitasModal
+          onClose={() => setOpenConfigCitas(false)}
+          showToast={show}
+        />
       )}
 
       {/* Portal de toasts */}
@@ -315,11 +330,17 @@ function ModalShell({
   title,
   onClose,
   children,
+  primaryActionLabel,
+  primaryActionDisabled,
+  onPrimaryAction,
 }: {
   titleIcon: ReactNode;
   title: string;
   onClose: () => void;
   children: ReactNode;
+  primaryActionLabel?: string;
+  primaryActionDisabled?: boolean;
+  onPrimaryAction?: () => void;
 }) {
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center p-4">
@@ -345,6 +366,15 @@ function ModalShell({
           >
             Cerrar
           </button>
+          {onPrimaryAction && (
+            <button
+              onClick={onPrimaryAction}
+              disabled={primaryActionDisabled}
+              className="rounded-xl bg-blue-600 text-white px-3 py-2 text-sm hover:bg-blue-700 disabled:opacity-50"
+            >
+              {primaryActionLabel ?? "Guardar"}
+            </button>
+          )}
         </footer>
       </div>
     </div>
@@ -820,7 +850,43 @@ function ConsultoriosModal({
         {}
       );
 
-      setPreview(res.data);
+      const previewData = res.data;
+
+      // Si NO hay citas afectadas, desactivar directamente
+      if (previewData.total_afectadas === 0) {
+        // No mostrar modal, solo ejecutar mantenimiento sin reprogramar
+        try {
+          await api.post<ApplyMantenimientoResp>(
+            `/consultorios/${row.id_consultorio}/apply-mantenimiento/`,
+            { confirm: true, set_inactive: true }
+          );
+
+          // Actualizar estado en UI
+          setItems((prev) =>
+            prev.map((it) =>
+              it.id_consultorio === row.id_consultorio
+                ? { ...it, estado: false }
+                : it
+            )
+          );
+          cancelEdit();
+          showToast(
+            "success",
+            "Consultorio desactivado. No había citas que requieran mantenimiento."
+          );
+        } catch (e: any) {
+          setError(
+            e?.response?.data?.detail || "No se pudo desactivar el consultorio."
+          );
+        } finally {
+          setSavingId(null);
+        }
+
+        return;
+      }
+
+      // Si hay citas afectadas, mostrar modal
+      setPreview(previewData);
       setPendingDeactivateRow(row);
       setConfirmDeactivateOpen(true);
     } catch (e: any) {
@@ -876,7 +942,7 @@ function ConsultoriosModal({
     }
   };
 
-  // 3) Reactivar: pasa reprogramación -> pendiente y activa consultorio
+  // 3) Reactivar: pasa reprogramación, pendiente y activa consultorio
   const applyReactivate = async (row: Consultorio) => {
     try {
       setSavingId(row.id_consultorio);
@@ -991,7 +1057,7 @@ function ConsultoriosModal({
     // Detectar cambio de estado
     const estadoCambió = Boolean(row.estado) !== Boolean(editEstado);
 
-    // Caso 1: Activo -> Inactivo  => flow preview + apply-reprogram
+    // Caso 1: Activo - Inactivo  = flow preview + apply-reprogram
     if (estadoCambió && row.estado === true && editEstado === false) {
       // antes de tocar número/descripcion, ejecutamos el flujo de desactivación
       await startDeactivateFlow(row);
@@ -1000,7 +1066,7 @@ function ConsultoriosModal({
       return;
     }
 
-    // Caso 2: Inactivo -> Activo  => apply-reactivate
+    // Caso 2: Inactivo - Activo  = apply-reactivate
     if (estadoCambió && row.estado === false && editEstado === true) {
       await applyReactivate(row);
       // Igual que arriba, si además cambiaste número/descr., puedes hacer PATCH adicional:
@@ -1037,7 +1103,7 @@ function ConsultoriosModal({
       return;
     }
 
-    // Caso 3: Estado no cambió => PATCH normal
+    // Caso 3: Estado no cambió = PATCH normal
     try {
       setSavingId(row.id_consultorio);
       setError(null);
@@ -1197,7 +1263,6 @@ function ConsultoriosModal({
         />
       </div>
 
-      {/* Nuevo */}
       <div className="rounded-xl border p-3">
         <div className="grid grid-cols-1 sm:grid-cols-6 gap-3 items-start">
           <div className="sm:col-span-2">
@@ -1809,6 +1874,379 @@ function AntecedentesModal({
         onConfirm={doDelete}
       />
     </ModalShell>
+  );
+}
+
+function ConfiguracionCitasModal({
+  onClose,
+  showToast,
+}: {
+  onClose: () => void;
+  showToast: (kind: ToastKind, msg: string) => void;
+}) {
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // === Errores por campo ============
+  const [fieldErrors, setFieldErrors] = useState<{
+    celular?: string;
+    maxCitasActivas?: string;
+    horasDesde?: string;
+    horasHasta?: string;
+    horasAutoconfirmar?: string;
+    maxCitasDia?: string;
+    cooldownDias?: string;
+    maxReprogramaciones?: string;
+    minHorasAnt?: string;
+  }>({});
+
+  const [celular, setCelular] = useState<string>("");
+  const [maxCitasActivas, setMaxCitasActivas] = useState<number>(1);
+
+  // === EXISTENTES ====================
+  const [horasDesde, setHorasDesde] = useState<number>(0);
+  const [horasHasta, setHorasHasta] = useState<number>(0);
+  const [horasAutoconfirmar, setHorasAutoconfirmar] = useState<number>(0);
+
+  const [maxCitasDia, setMaxCitasDia] = useState<number>(0);
+  const [cooldownDias, setCooldownDias] = useState<number>(0);
+  const [maxReprogramaciones, setMaxReprogramaciones] = useState<number>(0);
+
+  const [minHorasAnt, setMinHorasAnt] = useState<number>(0);
+
+  const formatLocalCelular = (value: string) => {
+    const digits = value.replace(/\D/g, "");
+    if (!digits) return "";
+
+    let formatted = digits.startsWith("0") ? digits : "0" + digits;
+    if (formatted.length >= 2 && formatted[1] !== "9") {
+      formatted = "09" + formatted.slice(2);
+    }
+
+    return formatted.slice(0, 10);
+  };
+
+  const handleCelularChange = (v: string) => {
+    const formatted = formatLocalCelular(v);
+    setCelular(formatted);
+    setFieldErrors((p) => ({ ...p, celular: undefined }));
+  };
+
+  // === Cargar configuración inicial ===
+  useEffect(() => {
+    let alive = true;
+
+    (async () => {
+      try {
+        const res = await api.get("/configuracion/");
+        if (!alive) return;
+
+        const cfg = res.data;
+
+        setCelular(formatLocalCelular(e164ToLocal(cfg.celular_contacto || "")));
+        setMaxCitasActivas(cfg.max_citas_activas || 1);
+
+        setHorasDesde(cfg.horas_confirmar_desde);
+        setHorasHasta(cfg.horas_confirmar_hasta);
+        setHorasAutoconfirmar(cfg.horas_autoconfirmar);
+
+        setMaxCitasDia(cfg.max_citas_dia);
+        setCooldownDias(cfg.cooldown_dias);
+        setMaxReprogramaciones(cfg.max_reprogramaciones);
+
+        setMinHorasAnt(cfg.min_horas_anticipacion);
+      } catch (e) {
+        setError("No se pudo cargar la configuración.");
+      } finally {
+        setLoading(false);
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // ==========================================================
+  // VALIDACIÓN Y GUARDADO
+  // ==========================================================
+  const handleSave = async () => {
+    setError(null);
+
+    const errors: any = {};
+    const celularLocal = formatLocalCelular(celular);
+    const celularE164 = localToE164(celularLocal);
+    setCelular(celularLocal);
+
+    // ======== Validaciones nuevas ========
+    if (!celularLocal.trim()) {
+      errors.celular = "El celular no puede estar vacio.";
+    } else if (!/^09[0-9]{8}$/.test(celularLocal.trim())) {
+      errors.celular = "Debe iniciar con 09 y tener 10 digitos numericos.";
+    }
+
+    if (maxCitasActivas < 1) {
+      errors.maxCitasActivas = "Debe ser al menos 1.";
+    }
+
+    // ======== Validaciones existentes ========
+    if (minHorasAnt >= horasDesde) {
+      errors.minHorasAnt =
+        "Debe ser menor que Horas desde las cuales se puede confirmar.";
+    }
+
+    if (horasAutoconfirmar > horasDesde) {
+      errors.horasAutoconfirmar = "Debe ser menor o igual que Horas desde.";
+    }
+
+    if (horasHasta >= horasDesde) {
+      errors.horasHasta = "Debe ser menor que Horas desde.";
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      return;
+    }
+
+    setFieldErrors({});
+    setSaving(true);
+
+    try {
+      await api.patch("/configuracion/", {
+        celular_contacto: celularE164,
+        max_citas_activas: maxCitasActivas,
+
+        horas_confirmar_desde: horasDesde,
+        horas_confirmar_hasta: horasHasta,
+        horas_autoconfirmar: horasAutoconfirmar,
+
+        max_citas_dia: maxCitasDia,
+        cooldown_dias: cooldownDias,
+        max_reprogramaciones: maxReprogramaciones,
+
+        min_horas_anticipacion: minHorasAnt,
+      });
+
+      showToast("success", "Configuración actualizada.");
+      setTimeout(() => onClose(), 150);
+    } catch (e: any) {
+      setError(
+        e?.response?.data?.detail || "Error al guardar la configuración."
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <ModalShell
+      titleIcon={<Settings className="size-5" />}
+      title="Configuración de citas"
+      onClose={onClose}
+      primaryActionLabel={saving ? "Guardando…" : "Guardar"}
+      primaryActionDisabled={saving}
+      onPrimaryAction={handleSave}
+    >
+      {error && (
+        <div className="rounded-xl border border-red-200 bg-red-50 p-2 text-sm text-red-700">
+          {error}
+        </div>
+      )}
+
+      {loading ? (
+        <p>Cargando…</p>
+      ) : (
+        <div className="space-y-4">
+          {/* NUEVA SECCIÓN DE CONTACTO */}
+          <Section title="Contacto del sistema">
+            <TextField
+              label="Número de celular del consultorio"
+              value={celular}
+              error={fieldErrors.celular}
+              onChange={handleCelularChange}
+            />
+
+            <NumberField
+              label="Máximo de citas activas por paciente"
+              value={maxCitasActivas}
+              error={fieldErrors.maxCitasActivas}
+              onChange={(v) => {
+                setMaxCitasActivas(v);
+                setFieldErrors((p) => ({ ...p, maxCitasActivas: undefined }));
+              }}
+            />
+          </Section>
+
+          {/* Horas Confirmación */}
+          <Section title="Confirmación de citas">
+            <NumberField
+              label="Horas desde las cuales se puede confirmar una cita"
+              value={horasDesde}
+              error={fieldErrors.horasDesde}
+              onChange={(v) => {
+                setHorasDesde(v);
+                setFieldErrors((p) => ({ ...p, horasDesde: undefined }));
+              }}
+            />
+            <NumberField
+              label="Horas hasta las cuales se puede confirmar una cita"
+              value={horasHasta}
+              error={fieldErrors.horasHasta}
+              onChange={(v) => {
+                setHorasHasta(v);
+                setFieldErrors((p) => ({ ...p, horasHasta: undefined }));
+              }}
+            />
+            <NumberField
+              label="Autoconfirmar si la cita se agenda con menos de X horas"
+              value={horasAutoconfirmar}
+              error={fieldErrors.horasAutoconfirmar}
+              onChange={(v) => {
+                setHorasAutoconfirmar(v);
+                setFieldErrors((p) => ({
+                  ...p,
+                  horasAutoconfirmar: undefined,
+                }));
+              }}
+            />
+          </Section>
+
+          {/* Agendamiento */}
+          <Section title="Restricciones de agendamiento">
+            <NumberField
+              label="Máximo de citas por día por paciente"
+              value={maxCitasDia}
+              error={fieldErrors.maxCitasDia}
+              onChange={(v) => {
+                setMaxCitasDia(v);
+                setFieldErrors((p) => ({ ...p, maxCitasDia: undefined }));
+              }}
+            />
+            <NumberField
+              label="Horas mínimas de anticipación para agendar"
+              value={minHorasAnt}
+              error={fieldErrors.minHorasAnt}
+              onChange={(v) => {
+                setMinHorasAnt(v);
+                setFieldErrors((p) => ({ ...p, minHorasAnt: undefined }));
+              }}
+            />
+          </Section>
+
+          {/* Penalizaciones */}
+          <Section title="Penalizaciones">
+            <NumberField
+              label="Días de cooldown por ausentismo o no confirmación"
+              value={cooldownDias}
+              error={fieldErrors.cooldownDias}
+              onChange={(v) => {
+                setCooldownDias(v);
+                setFieldErrors((p) => ({ ...p, cooldownDias: undefined }));
+              }}
+            />
+            <NumberField
+              label="Máximo de reprogramaciones permitidas por cita"
+              value={maxReprogramaciones}
+              error={fieldErrors.maxReprogramaciones}
+              onChange={(v) => {
+                setMaxReprogramaciones(v);
+                setFieldErrors((p) => ({
+                  ...p,
+                  maxReprogramaciones: undefined,
+                }));
+              }}
+            />
+          </Section>
+        </div>
+      )}
+    </ModalShell>
+  );
+}
+
+/* === Pequeños subcomponentes de UI para ordenar el modal === */
+function Section({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="rounded-xl border p-4 space-y-3">
+      <h4 className="font-semibold text-gray-700 text-sm">{title}</h4>
+      {children}
+    </div>
+  );
+}
+
+function TextField({
+  label,
+  value,
+  error,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  error?: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div>
+      <label className="block text-xs text-gray-500">{label}</label>
+
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={
+          "mt-1 w-full rounded-xl border px-3 py-2 " +
+          (error ? "border-red-500 bg-red-50" : "border-gray-300")
+        }
+      />
+
+      {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
+    </div>
+  );
+}
+
+function NumberField({
+  label,
+  value,
+  error,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  error?: string;
+  onChange: (v: number) => void;
+}) {
+  const [text, setText] = useState(String(value));
+
+  useEffect(() => {
+    setText(String(value)); // sincroniza cuando cambian desde backend
+  }, [value]);
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = e.target.value;
+    setText(v); // mantenemos el texto tal cual lo escribe el usuario
+
+    if (v.trim() === "") return;
+    if (isNaN(Number(v))) return;
+
+    onChange(Number(v));
+  };
+
+  return (
+    <div>
+      <label className="block text-xs text-gray-500">{label}</label>
+
+      <input
+        type="text"
+        value={text}
+        onChange={handleChange}
+        className={
+          "mt-1 w-full rounded-xl border px-3 py-2 " +
+          (error ? "border-red-500 bg-red-50" : "border-gray-300")
+        }
+      />
+
+      {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
+    </div>
   );
 }
 

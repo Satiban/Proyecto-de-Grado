@@ -14,7 +14,6 @@ type RolLite = { id_rol: number; rol?: string } | number;
 
 type OdontologoLite = {
   id_odontologo: number;
-  // opcionalmente el backend puede incluir id_usuario, consultorio, etc.
   [k: string]: any;
 };
 
@@ -42,9 +41,10 @@ export interface Usuario {
   is_staff?: boolean;
   is_superuser?: boolean;
 
-  // Extras que agregaremos nosotros:
+  // Extras 
   odontologo?: OdontologoLite | null;
   id_odontologo?: number | null;
+  id_paciente?: number | null;
 
   // Auditoría
   created_at?: string | null;
@@ -65,7 +65,22 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [usuario, setUsuario] = useState<Usuario | null>(() => {
     const stored = localStorage.getItem("usuario");
-    return stored ? JSON.parse(stored) : null;
+    if (!stored) return null;
+    
+    try {
+      const parsed = JSON.parse(stored);
+      
+      // Detectar si la foto está encriptada
+      if (parsed?.foto && typeof parsed.foto === 'string' && parsed.foto.startsWith('gAAAAA')) {
+        console.warn('⚠️ URL de foto encriptada detectada. Limpiando localStorage...');
+        localStorage.removeItem("usuario");
+        return null;
+      }
+      
+      return parsed;
+    } catch {
+      return null;
+    }
   });
 
   // Persistencia en localStorage
@@ -88,11 +103,16 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
   }, []);
 
-  // Trae /usuarios/me y, si existe, /odontologos/me. Fusiona ambos.
   const refreshUsuario = async () => {
     try {
       const { data: me } = await api.get("/usuarios/me/");
       let merged: Usuario = { ...(me as Usuario) };
+
+      // Validación adicional: si la foto viene encriptada, limpiar
+      if (merged?.foto && typeof merged.foto === 'string' && merged.foto.startsWith('gAAAAA')) {
+        console.error('❌ La API devolvió una URL encriptada. Esto es un error del backend.');
+        merged.foto = null;
+      }
 
       // si el usuario es odontólogo (id_rol=3) o por si acaso, consultamos /odontologos/me
       try {
@@ -108,14 +128,13 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
           merged = { ...merged, odontologo: null, id_odontologo: null };
         }
       } catch {
-        // si falla, no rompemos la sesión; solo limpiamos los campos
         merged = { ...merged, odontologo: null, id_odontologo: null };
       }
 
       setUsuario(merged);
       localStorage.setItem("usuario", JSON.stringify(merged));
     } catch {
-      // Token inválido o error → limpiar todo
+      // Token inválido o error limpiar todo
       setUsuario(null);
       localStorage.removeItem("usuario");
       localStorage.removeItem("accessToken");

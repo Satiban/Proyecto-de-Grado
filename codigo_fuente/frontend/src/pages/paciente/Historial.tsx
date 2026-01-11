@@ -53,6 +53,11 @@ export type Cita = {
   odontologo_especialidades?: string[] | null;
   odontologo_especialidades_activas?: string[] | null;
   consultorio?: { id_consultorio: number; numero: string } | null;
+  pago?: {
+    id_pago_cita: number;
+    estado_pago: "pendiente" | "pagado" | "reembolsado";
+    monto?: string;
+  } | null;
 };
 
 type Opcion = { value: string; label: string };
@@ -130,6 +135,46 @@ function EstadoPill({ estado }: { estado: Estado }) {
       ? "bg-blue-100 text-blue-800 border-blue-200"
       : "bg-red-100 text-red-800 border-red-200";
   const label = estado.charAt(0).toUpperCase() + estado.slice(1).toLowerCase();
+  return (
+    <span
+      className={`inline-block text-xs px-2 py-1 rounded-full border ${cls}`}
+    >
+      {label}
+    </span>
+  );
+}
+
+/* Pill de estado de pago */
+function estadoPagoPill(cita: Cita) {
+  // Si la cita no está realizada, no aplica mostrar pago
+  if (cita.estado !== "realizada") {
+    return <span className="text-gray-400 text-xs">—</span>;
+  }
+
+  // Si no hay pago registrado, mostrar como Pendiente
+  if (!cita.pago) {
+    return (
+      <span className="inline-block text-xs px-2 py-1 rounded-full border bg-amber-100 text-amber-800 border-amber-200">
+        Pendiente
+      </span>
+    );
+  }
+
+  const estado = cita.pago.estado_pago;
+  const cls =
+    estado === "pagado"
+      ? "bg-emerald-100 text-emerald-800 border-emerald-200"
+      : estado === "reembolsado"
+      ? "bg-red-100 text-red-800 border-red-200"
+      : "bg-amber-100 text-amber-800 border-amber-200";
+
+  const label =
+    estado === "pagado"
+      ? "Pagado"
+      : estado === "reembolsado"
+      ? "Reembolsado"
+      : "Pendiente";
+
   return (
     <span
       className={`inline-block text-xs px-2 py-1 rounded-full border ${cls}`}
@@ -271,6 +316,7 @@ export default function Historial() {
         setLoadingCitas(true);
 
         const params: Record<string, any> = {
+          mine: 1,
           ordering: "-fecha,hora",
           page_size: 1000,
         };
@@ -559,20 +605,21 @@ export default function Historial() {
                   <th className="py-2 px-3 text-center">Motivo</th>
                   <th className="py-2 px-3 text-center">Odontólogo</th>
                   <th className="py-2 px-3 text-center">Consultorio</th>
-                  <th className="py-2 px-3 text-center">Estado</th>
+                  <th className="py-2 px-3 text-center">Estado Cita</th>
+                  <th className="py-2 px-3 text-center">Estado Pago</th>
                   <th className="py-2 px-3 text-center w-36">Acción</th>
                 </tr>
               </thead>
               <tbody>
                 {loadingCitas ? (
                   <tr>
-                    <td colSpan={7} className="py-6 text-center">
+                    <td colSpan={8} className="py-6 text-center">
                       Cargando…
                     </td>
                   </tr>
                 ) : currentSlice.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="py-6 text-center text-gray-500">
+                    <td colSpan={8} className="py-6 text-center text-gray-500">
                       Sin resultados
                     </td>
                   </tr>
@@ -609,6 +656,9 @@ export default function Historial() {
                       </td>
                       <td className="py-2 px-3 text-center">
                         <EstadoPill estado={c.estado} />
+                      </td>
+                      <td className="py-2 px-3 text-center">
+                        {estadoPagoPill(c)}
                       </td>
                       <td className="py-2 px-3 text-center">
                         <div className="flex items-center justify-center">

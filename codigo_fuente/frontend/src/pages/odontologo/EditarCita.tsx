@@ -7,7 +7,7 @@ import {
   useRef,
   type MutableRefObject,
 } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useLocation } from "react-router-dom";
 import type { AxiosResponse } from "axios";
 import { api } from "../../api/axios";
 import {
@@ -31,7 +31,7 @@ type PacienteFlat = {
 };
 
 type HorarioVigente = {
-  dia_semana: number; // 0=Lunes..6=Domingo (canónico)
+  dia_semana: number; // 0=Lunes..6=Domingo
   hora_inicio: string; // "HH:MM"
   hora_fin: string; // "HH:MM"
   vigente?: boolean;
@@ -96,7 +96,7 @@ type CitaDet = {
 
 /* ==================== Constantes / helpers ==================== */
 const LUNCH_FROM = 13; // 13:00
-const LUNCH_TO = 15; // 15:00 (exclusivo)
+const LUNCH_TO = 15; // 15:00
 /* Anticipación mínima misma fecha (minutos) */
 const SAME_DAY_LEAD_MIN = 120;
 const PAGE_SIZE = 7;
@@ -150,7 +150,6 @@ function buildGrid(year: number, month0: number) {
   return rows;
 }
 
-/** ¿El MM-DD de `dayISO` cae dentro del rango anual [startISO..endISO]? (ignora año) */
 function occursOnAnnualRange(dayISO: string, startISO: string, endISO: string) {
   const md = dayISO.slice(5),
     ms = startISO.slice(5),
@@ -387,10 +386,18 @@ function DatePopover({
   );
 }
 
+// Cache simple en memoria (clave = "YYYY-M-odoId")
+const bloqueosCache: Record<
+  string,
+  { global: Record<string, BloqueoInfo>; odo: Record<string, BloqueoInfo> }
+> = {};
+
 /* ==================== Página ==================== */
 export default function EditarCitaOdontologo() {
   const navigate = useNavigate();
   const { id } = useParams<{ id: string }>();
+  const location = useLocation();
+  const fechaAnterior = (location.state as any)?.fecha;
 
   /* ------- Estado principal ------- */
   const [cita, setCita] = useState<CitaDet | null>(null);
@@ -511,6 +518,15 @@ export default function EditarCitaOdontologo() {
           return { id_paciente, cedula, nombreCompleto };
         })
       );
+
+      planos.sort((a, b) => {
+        const aParts = a.nombreCompleto.trim().split(/\s+/);
+        const bParts = b.nombreCompleto.trim().split(/\s+/);
+        const aApellido = aParts.slice(-2).join(" ").toLowerCase();
+        const bApellido = bParts.slice(-2).join(" ").toLowerCase();
+        return aApellido.localeCompare(bApellido, "es");
+      });
+
       setPacientes(planos);
     } catch (e: any) {
       setPacErr(
@@ -522,9 +538,11 @@ export default function EditarCitaOdontologo() {
     }
   }, []);
 
+  /* ------- Cargar pacientes (solo si necesito buscarlos) ------- */
   useEffect(() => {
+    if (!cita) return; // espera que la cita se cargue primero
     loadPacientes();
-  }, [loadPacientes]);
+  }, [cita, pacSel, loadPacientes]);
 
   const pacientesFiltrados = useMemo(() => {
     const nom = fNombre.trim().toLowerCase();
@@ -631,6 +649,17 @@ export default function EditarCitaOdontologo() {
         const from = `${y}-${pad2(m)}-01`;
         const to = `${y}-${pad2(m)}-${pad2(lastDay)}`;
 
+        const cacheKey = `${y}-${m}-${odoId}`;
+        if (bloqueosCache[cacheKey]) {
+          // Usar cache existente
+          const cached = bloqueosCache[cacheKey];
+          setBloqueosGlobalMap(cached.global);
+          setBloqueosOdoMap(cached.odo);
+          setBloqsLoading(false);
+          return;
+        }
+
+        // Si no hay cache, llamar al backend
         const [{ data: bGlobal }, { data: bOdo }] = await Promise.all([
           api.get(`/bloqueos-dias/`, {
             params: { start: from, end: to, odontologo: "global" },
@@ -676,12 +705,17 @@ export default function EditarCitaOdontologo() {
             }
           }
         }
-        setBloqueosGlobalMap(mapG);
 
         const mapO: Record<string, BloqueoInfo> = {};
         for (const iso of bOdo ?? [])
           mapO[iso] = { scope: "odo", motivo: null };
+
+        // Guardar en estado
+        setBloqueosGlobalMap(mapG);
         setBloqueosOdoMap(mapO);
+
+        // Guardar en cache
+        bloqueosCache[cacheKey] = { global: mapG, odo: mapO };
       } finally {
         setBloqsLoading(false);
       }
@@ -780,21 +814,19 @@ export default function EditarCitaOdontologo() {
       setLoadingHoras(true);
       try {
         const resp = await Promise.all(
-          ordered.map((c) =>
-            api
-              .get<DisponibilidadResp>("/citas/disponibilidad/", {
-                params: { fecha, id_odontologo: odoId, id_consultorio: c.id },
-              })
-              .then((r) => ({
-                id: c.id,
-                label:
-                  c.nombre ??
-                  (c.numero
-                    ? `Consultorio ${c.numero}`
-                    : `Consultorio ${c.id}`),
-                set: new Set(r.data?.disponibles ?? []),
-              }))
-          )
+          ordered.map(async (c) => {
+            const { data } = await api.get<DisponibilidadResp>(
+              "/citas/disponibilidad/",
+              { params: { fecha, id_odontologo: odoId, id_consultorio: c.id } }
+            );
+            return {
+              id: c.id,
+              label:
+                c.nombre ??
+                (c.numero ? `Consultorio ${c.numero}` : `Consultorio ${c.id}`),
+              set: new Set(data?.disponibles ?? []),
+            };
+          })
         );
 
         const opts: Array<{
@@ -947,7 +979,7 @@ export default function EditarCitaOdontologo() {
       await api.put(`/citas/${id}/`, payload);
       setShowToast(true);
       setTimeout(() => {
-        navigate("/odontologo/agenda");
+        navigate(`/odontologo/citas/${id}/ver`);
       }, 1200);
     } catch (err: any) {
       const data = err?.response?.data;
@@ -976,6 +1008,20 @@ export default function EditarCitaOdontologo() {
         nombre: p.nombreCompleto,
       });
   }, [cita, pacientes, pacSel?.id]);
+
+  /* ------- Calcular página inicial del paciente seleccionado ------- */
+  useEffect(() => {
+    if (!cita || pacientes.length === 0) return;
+
+    const idx = pacientes.findIndex(
+      (p) => Number(p.id_paciente) === cita.id_paciente
+    );
+
+    if (idx >= 0) {
+      const targetPage = Math.floor(idx / PAGE_SIZE) + 1;
+      setPage(targetPage);
+    }
+  }, [cita, pacientes]);
 
   /* ==================== UI ==================== */
 
@@ -1019,10 +1065,19 @@ export default function EditarCitaOdontologo() {
         <div className="flex gap-2">
           <button
             className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50"
-            onClick={() => navigate(`/odontologo/citas/${id}/ver`)}
+            onClick={() => {
+              if (fechaAnterior) {
+                navigate("/odontologo/agenda", {
+                  state: { fecha: fechaAnterior },
+                });
+              } else {
+                navigate(-1);
+              }
+            }}
           >
-            Volver a detalles
+            Cancelar
           </button>
+
           <button
             className="px-3 py-2 rounded-lg bg-gray-800 text-white hover:bg-black/80 disabled:opacity-50 disabled:cursor-not-allowed"
             onClick={guardar}

@@ -1,6 +1,6 @@
 // src/pages/admin/Agenda.tsx
 import { useEffect, useMemo, useState, useRef, Fragment } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import { api } from "../../api/axios";
 import {
   CalendarDays,
@@ -10,7 +10,7 @@ import {
   Eraser,
   CalendarPlus,
   Eye,
-  Pencil,
+  Pencil
 } from "lucide-react";
 
 /* ===== Tipos ===== */
@@ -35,6 +35,11 @@ type Cita = {
   paciente_cedula?: string;
   odontologo_nombre?: string;
   consultorio?: { id_consultorio: number; numero: string };
+  pago?: {
+    id_pago_cita: number;
+    estado_pago: "pendiente" | "pagado" | "reembolsado";
+    monto?: string;
+  } | null;
 };
 
 type DiaMeta = {
@@ -62,7 +67,7 @@ type ResumenDia = {
   bloqueado: boolean;
 };
 
-/* ===== Constantes / helpers ===== */
+// ===== Constantes / helpers ===== 
 const ESTADOS = [
   { value: "", label: "Estados" },
   { value: "pendiente", label: "Pendiente" },
@@ -103,7 +108,7 @@ function dowMonday0(iso: string) {
   return (d.getDay() + 6) % 7; // 0=Lun..6=Dom
 }
 
-/* ====== Calendario popover con Mes/Año + badges ====== */
+// ====== Calendario popover con Mes/Año + badges ======
 function useClickAway<T extends HTMLElement>(cb: () => void) {
   const ref = useRef<T | null>(null);
   useEffect(() => {
@@ -312,25 +317,17 @@ function DatePopover({
   );
 }
 
-function AccionesCita({ id }: { id: number }) {
+function AccionesCita({ id, fecha }: { id: number; fecha: string }) {
   return (
-    <div className="flex items-center justify-center gap-2">
+    <div className="flex items-center justify-center">
       <Link
         to={`/admin/citas/${id}`}
+        state={{ from: "agenda", selectedDate: fecha }}
         className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
         title="Ver detalles"
       >
         <Eye className="size-4" />
         Ver
-      </Link>
-
-      <Link
-        to={`/admin/citas/${id}/editar`}
-        className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
-        title="Editar"
-      >
-        <Pencil className="size-4" />
-        Editar
       </Link>
     </div>
   );
@@ -339,6 +336,9 @@ function AccionesCita({ id }: { id: number }) {
 /* ====== Agenda (lista del día) — Admin ====== */
 export default function Agenda() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const fechaNueva = location.state?.fechaNueva ?? null;
+  const selectedDateFromBack = location.state?.selectedDate ?? null;
 
   /* ------- Estado principal ------- */
   const [fecha, setFecha] = useState<string>(() => toISODate(new Date()));
@@ -353,6 +353,16 @@ export default function Agenda() {
   const [citasMantenimiento, setCitasMantenimiento] = useState<Cita[]>([]);
   const [loading, setLoading] = useState(false);
 
+  useEffect(() => {
+    // Si venimos de AgendarCita o desde CitaDetalles, usar esa fecha
+    const nuevaFecha = fechaNueva || selectedDateFromBack;
+    if (nuevaFecha) {
+      setFecha(nuevaFecha);
+      // Limpia el state para evitar que se mantenga al recargar
+      window.history.replaceState({}, document.title);
+    }
+  }, [fechaNueva, selectedDateFromBack]);
+
   // Reglas / info calendario
   const [diasHabiles, setDiasHabiles] = useState<number[]>([]);
   const [bloqueos, setBloqueos] = useState<string[]>([]);
@@ -364,14 +374,14 @@ export default function Agenda() {
   // Evita peticiones duplicadas para el mismo (año, mes) mientras están en vuelo
   const inflightMonthsRef = useRef<Map<string, Promise<void>>>(new Map());
 
-  // Mapa id→nombre para odontólogos
+  // Mapa id nombre para odontólogos
   const odontoNameById = useMemo(() => {
     const m = new Map<number, string>();
     for (const o of odontologos) m.set(o.id, o.nombre);
     return m;
   }, [odontologos]);
 
-  // Grilla fija 09:00 → 21:00 (sin 13 y 14)
+  // Grilla fija 09:00 - 21:00 (sin 13 y 14)
   const horas = useMemo(() => {
     const arr: string[] = [];
     for (let h = 9; h <= 21; h++) {
@@ -738,6 +748,45 @@ export default function Agenda() {
     );
   };
 
+  const estadoPagoPill = (cita: Cita) => {
+    // Si la cita no está realizada, no aplica mostrar pago
+    if (cita.estado !== "realizada") {
+      return <span className="text-gray-400 text-xs">—</span>;
+    }
+
+    // Si no hay pago registrado, mostrar como Pendiente
+    if (!cita.pago) {
+      return (
+        <span className="inline-block text-xs px-2 py-1 rounded-full border bg-amber-100 text-amber-800 border-amber-200">
+          Pendiente
+        </span>
+      );
+    }
+
+    const estado = cita.pago.estado_pago;
+    const cls =
+      estado === "pagado"
+        ? "bg-emerald-100 text-emerald-800 border-emerald-200"
+        : estado === "reembolsado"
+        ? "bg-red-100 text-red-800 border-red-200"
+        : "bg-amber-100 text-amber-800 border-amber-200";
+
+    const label =
+      estado === "pagado"
+        ? "Pagado"
+        : estado === "reembolsado"
+        ? "Reembolsado"
+        : "Pendiente";
+
+    return (
+      <span
+        className={`inline-block text-xs px-2 py-1 rounded-full border ${cls}`}
+      >
+        {label}
+      </span>
+    );
+  };
+
   // Conteo de bloqueos del mes visible (para aviso)
   const selDate = fromISO(fecha);
   const selYM = `${selDate.getFullYear()}-${pad2(selDate.getMonth() + 1)}`;
@@ -940,8 +989,9 @@ export default function Agenda() {
                 <th className="py-2 px-3 text-center">Motivo</th>
                 <th className="py-2 px-3 text-center">Odontólogo</th>
                 <th className="py-2 px-3 text-center">Consultorio</th>
-                <th className="py-2 px-3 text-center">Estado</th>
-                <th className="py-2 px-3 text-center w-40">Acción</th>
+                <th className="py-2 px-3 text-center">Estado Cita</th>
+                <th className="py-2 px-3 text-center">Estado Pago</th>
+                <th className="py-2 px-3 text-center w-24">Acción</th>
               </tr>
             </thead>
 
@@ -985,7 +1035,10 @@ export default function Agenda() {
                           {estadoPill(first.estado)}
                         </td>
                         <td className="py-2 px-3 text-center">
-                          <AccionesCita id={first.id_cita} />
+                          {estadoPagoPill(first)}
+                        </td>
+                        <td className="py-2 px-3 text-center">
+                          <AccionesCita id={first.id_cita} fecha={fecha} />
                         </td>
                       </tr>
 
@@ -1020,7 +1073,10 @@ export default function Agenda() {
                               {estadoPill(cita.estado)}
                             </td>
                             <td className="py-2 px-3 text-center">
-                              <AccionesCita id={cita.id_cita} />
+                              {estadoPagoPill(cita)}
+                            </td>
+                            <td className="py-2 px-3 text-center">
+                              <AccionesCita id={cita.id_cita} fecha={fecha} />
                             </td>
                           </tr>
                         );
@@ -1034,6 +1090,7 @@ export default function Agenda() {
                   <tr key={h} className="border-b border-gray-200">
                     <td className="py-2 px-3 font-medium text-center">{h}</td>
                     <td className="py-2 px-3 text-center">Libre</td>
+                    <td className="py-2 px-3 text-center">—</td>
                     <td className="py-2 px-3 text-center">—</td>
                     <td className="py-2 px-3 text-center">—</td>
                     <td className="py-2 px-3 text-center">—</td>

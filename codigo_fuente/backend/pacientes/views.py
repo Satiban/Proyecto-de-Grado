@@ -1,6 +1,10 @@
+# backend/pacientes/views.py
 from rest_framework import viewsets
 from rest_framework.permissions import IsAuthenticated, AllowAny, BasePermission, SAFE_METHODS
 from rest_framework.exceptions import NotFound
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from citas.models import Cita
 
 from .models import Paciente, Antecedente, PacienteAntecedente
 from .serializers import (
@@ -14,7 +18,7 @@ from usuarios.models import PACIENTE_ROLE_ID
 # --- Permiso: solo admin (id_rol=1) u odontólogo (id_rol=3) pueden modificar Antecedentes ---
 class IsAdminOrDentist(BasePermission):
     def has_permission(self, request, view):
-        # Lecturas permitidas para todos (útil en página de registro)
+        # Lecturas permitidas para todos
         if request.method in SAFE_METHODS:
             return True
         # Para escribir, debe estar autenticado y tener rol 1 o 3
@@ -36,7 +40,6 @@ class PacienteViewSet(viewsets.ModelViewSet):
         if getattr(user, "id_rol_id", None) == PACIENTE_ROLE_ID:
             return qs.filter(id_usuario_id=getattr(user, "id_usuario", None))
 
-        # Para admin/odontólogo permitimos filtrar por ?id_usuario=<int>
         qp = self.request.query_params
         uid = qp.get("id_usuario")
         if uid:
@@ -46,6 +49,27 @@ class PacienteViewSet(viewsets.ModelViewSet):
                 return Paciente.objects.none()
 
         return qs
+    
+    @action(detail=False, methods=["get"], url_path="de-odontologo")
+    def de_odontologo(self, request):
+        id_odo = request.query_params.get("id_odontologo")
+        if not id_odo:
+            return Response({"detail": "Falta id_odontologo"}, status=400)
+
+        pac_ids = (
+            Cita.objects.filter(id_odontologo=id_odo)
+            .values_list("id_paciente", flat=True)
+            .distinct()
+        )
+        qs = Paciente.objects.filter(id_paciente__in=pac_ids).select_related("id_usuario")
+
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            ser = self.get_serializer(page, many=True)
+            return self.get_paginated_response(ser.data)
+
+        ser = self.get_serializer(qs, many=True)
+        return Response(ser.data)
 
 
 class AntecedenteViewSet(viewsets.ModelViewSet):
@@ -53,7 +77,6 @@ class AntecedenteViewSet(viewsets.ModelViewSet):
     serializer_class = AntecedenteSerializer
 
     def get_permissions(self):
-        # listar/detallar: cualquiera (para poblar selectores en formularios públicos)
         if self.action in ["list", "retrieve"]:
             return [AllowAny()]
         # crear/editar/eliminar: solo admin u odontólogo
@@ -61,15 +84,6 @@ class AntecedenteViewSet(viewsets.ModelViewSet):
 
 
 class PacienteAntecedenteViewSet(viewsets.ModelViewSet):
-    """
-    Importante: filtramos por query params y reforzamos seguridad:
-      - ?id_paciente=<int>
-      - ?id_antecedente=<int>
-      - ?relacion_familiar=<choice>
-    Si el autenticado es PACIENTE (id_rol=2), se limitan los resultados
-    a su propio Paciente (id_usuario = request.user.id_usuario) ignorando
-    cualquier otro id_paciente que intenten pasar.
-    """
     serializer_class = PacienteAntecedenteSerializer
     permission_classes = [IsAuthenticated]
 
@@ -79,11 +93,9 @@ class PacienteAntecedenteViewSet(viewsets.ModelViewSet):
 
         qp = self.request.query_params
 
-        # Si es PACIENTE: forzar a su propio Paciente
         if getattr(user, "id_rol_id", None) == PACIENTE_ROLE_ID:
             qs = qs.filter(id_paciente__id_usuario_id=getattr(user, "id_usuario", None))
         else:
-            # Solo para roles no-paciente aplicamos filtros libres
             pid = qp.get("id_paciente")
             if pid:
                 try:
@@ -91,7 +103,6 @@ class PacienteAntecedenteViewSet(viewsets.ModelViewSet):
                 except (TypeError, ValueError):
                     return PacienteAntecedente.objects.none()
 
-        # id_antecedente
         aid = qp.get("id_antecedente")
         if aid:
             try:
@@ -99,14 +110,12 @@ class PacienteAntecedenteViewSet(viewsets.ModelViewSet):
             except (TypeError, ValueError):
                 return PacienteAntecedente.objects.none()
 
-        # relacion_familiar (choices: abuelos, padres, hermanos, propio)
         rel = qp.get("relacion_familiar")
         if rel:
             qs = qs.filter(relacion_familiar=rel)
 
         return qs
 
-    # (Extra defensa) Si se hace retrieve/destroy y viene ?id_paciente=X,
     # validamos que el registro pertenezca a ese paciente.
     def get_object(self):
         obj = super().get_object()
@@ -124,6 +133,5 @@ class PacienteAntecedenteViewSet(viewsets.ModelViewSet):
             except (TypeError, ValueError):
                 raise NotFound("id_paciente inválido.")
             if obj.id_paciente_id != pid_int:
-                # No expongas registros que no pertenecen al paciente indicado
                 raise NotFound("Registro no encontrado para el paciente indicado.")
         return obj

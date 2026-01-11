@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { api } from "../../api/axios";
+import { e164ToLocal } from "../../utils/phoneFormat";
 import {
   Eye,
   Pencil,
@@ -22,18 +23,20 @@ import {
   ChevronsLeft,
   ChevronsRight,
   ArrowLeft,
+  Loader2,
 } from "lucide-react";
 import type { AxiosResponse } from "axios";
 
 /* =========================
-   Tipos
+    Tipos
    ========================= */
 type Odontologo = {
   id_odontologo: number;
   cedula: string;
   nombreCompleto: string;
   sexo: string;
-  is_active: boolean;
+  is_active: boolean; // Estado del Usuario
+  odontologo_activo: boolean; // Estado del Odontólogo
   foto?: string | null;
 
   fecha_nacimiento?: string | null; // "YYYY-MM-DD"
@@ -85,6 +88,11 @@ type Cita = {
   paciente_cedula: string;
   odontologo_nombre?: string;
   consultorio?: { id_consultorio: number; numero: string } | null;
+  pago?: {
+    id_pago_cita: number;
+    estado_pago: "pendiente" | "pagado" | "reembolsado";
+    monto?: string;
+  } | null;
 };
 
 const ESTADOS: readonly EstadoCanon[] = [
@@ -106,7 +114,6 @@ const DIAS: Record<number, string> = {
   5: "Sáb",
   6: "Dom",
 };
-// Orden visual: Lun..Dom
 const ORDEN_SEMANA: number[] = [0, 1, 2, 3, 4, 5, 6];
 
 function useDebounced<T>(value: T, delay = 400) {
@@ -256,25 +263,58 @@ function estadoPill(estadoRaw: EstadoCitaRaw) {
   );
 }
 
-/* Acciones por cita */
-function AccionesCita({ id }: { id: number }) {
+/* Pill de estado de pago */
+function estadoPagoPill(cita: Cita) {
+  // Si la cita no está realizada, no aplica mostrar pago
+  if (cita.estado !== "realizada") {
+    return <span className="text-gray-400 text-xs">—</span>;
+  }
+
+  // Si no hay pago registrado, mostrar como Pendiente
+  if (!cita.pago) {
+    return (
+      <span className="inline-block text-xs px-2 py-1 rounded-full border bg-amber-100 text-amber-800 border-amber-200">
+        Pendiente
+      </span>
+    );
+  }
+
+  const estado = cita.pago.estado_pago;
+  const cls =
+    estado === "pagado"
+      ? "bg-emerald-100 text-emerald-800 border-emerald-200"
+      : estado === "reembolsado"
+      ? "bg-red-100 text-red-800 border-red-200"
+      : "bg-amber-100 text-amber-800 border-amber-200";
+
+  const label =
+    estado === "pagado"
+      ? "Pagado"
+      : estado === "reembolsado"
+      ? "Reembolsado"
+      : "Pendiente";
+
   return (
-    <div className="flex items-center justify-center gap-2">
+    <span
+      className={`inline-block text-xs px-2 py-1 rounded-full border ${cls}`}
+    >
+      {label}
+    </span>
+  );
+}
+
+/* Acciones por cita */
+function AccionesCita({ id, fecha }: { id: number; fecha?: string }) {
+  return (
+    <div className="flex items-center justify-center">
       <Link
         to={`/admin/citas/${id}`}
+        state={{ from: "odontologo", selectedDate: fecha }}
         className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 hover:bg-gray-50"
         title="Ver detalles"
       >
         <Eye className="size-4" />
         Ver
-      </Link>
-      <Link
-        to={`/admin/citas/${id}/editar`}
-        className="inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-sm bg-white text-gray-900 hover:bg-gray-50"
-        title="Editar"
-      >
-        <Pencil className="size-4" />
-        Editar
       </Link>
     </div>
   );
@@ -346,6 +386,10 @@ export default function OdontologoDetalle() {
   const [odo, setOdo] = useState<Odontologo | null>(null);
   const [, setErrorPerfil] = useState<string | null>(null);
   const [, setErrorCitas] = useState<string | null>(null);
+  
+  // Estado para verificar si tiene datos de paciente
+  const [tieneDatosPaciente, setTieneDatosPaciente] = useState<boolean | null>(null);
+  const [checkingPaciente, setCheckingPaciente] = useState(false);
 
   // KPIs
   const [kpiTotal, setKpiTotal] = useState(0);
@@ -384,10 +428,27 @@ export default function OdontologoDetalle() {
           ...data,
           nombreCompleto,
           foto: absolutize(data.foto),
-          activo: data.is_active,
+          odontologo_activo: data.odontologo_activo !== undefined ? data.odontologo_activo : data.activo,
+          is_active: data.is_active,
+          // Convertir celular de E.164 a formato local para mostrar
+          celular: data.celular ? e164ToLocal(data.celular) : data.celular,
         };
 
         setOdo(parsed);
+        
+        // Verificar si tiene datos de paciente
+        if (data.id_usuario) {
+          setCheckingPaciente(true);
+          try {
+            const verifyRes = await api.get(`/usuarios/${data.id_usuario}/verificar-rol-paciente/`);
+            setTieneDatosPaciente(verifyRes.data?.existe === true);
+          } catch (err) {
+            console.error("Error al verificar rol paciente:", err);
+            setTieneDatosPaciente(null);
+          } finally {
+            setCheckingPaciente(false);
+          }
+        }
       } catch (e: any) {
         if (e?.name === "CanceledError") return;
         console.error(e);
@@ -548,9 +609,23 @@ export default function OdontologoDetalle() {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold flex items-center gap-2">
-          Detalle del odontólogo
-        </h1>
+        <div>
+          <h1 className="text-2xl font-bold flex items-center gap-2">
+            Detalle del odontólogo
+          </h1>
+          {/* Indicador de datos de paciente */}
+          {checkingPaciente && (
+            <p className="text-xs text-gray-500 mt-1 flex items-center gap-1">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Verificando datos de paciente...
+            </p>
+          )}
+          {tieneDatosPaciente === true && (
+            <p className="text-xs text-green-600 mt-1">
+              ✓ Ya tiene datos de paciente registrados
+            </p>
+          )}
+        </div>
         <div className="flex items-center gap-2">
           {/* Volver a la IZQUIERDA: blanco con letras negras */}
           <button
@@ -561,7 +636,7 @@ export default function OdontologoDetalle() {
             Volver
           </button>
 
-          {/* Editar a la DERECHA: negro con letras blancas */}
+          {/* Editar */}
           <button
             onClick={() =>
               navigate(`/admin/odontologos/${odontologoId}/editar`)
@@ -603,14 +678,31 @@ export default function OdontologoDetalle() {
                 )}
               </div>
 
-              {loadingPerfil ? null : odo?.is_active ? (
-                <span className="rounded bg-green-100 px-2 py-0.5 text-sm text-green-700">
-                  Activo
-                </span>
-              ) : (
-                <span className="rounded bg-red-100 px-2 py-0.5 text-sm text-red-700">
-                  Inactivo
-                </span>
+              {/* Estado del Odontólogo */}
+              {loadingPerfil ? null : (
+                <div className="flex flex-col items-center gap-2">
+                  <span className={`rounded px-2 py-0.5 text-sm ${
+                    odo?.odontologo_activo 
+                      ? "bg-green-100 text-green-700" 
+                      : "bg-red-100 text-red-700"
+                  }`}>
+                    {odo?.odontologo_activo ? "Odontólogo Activo" : "Odontólogo Inactivo"}
+                  </span>
+                  
+                  {/* Mensaje especial si está inactivo como odontólogo pero tiene datos de paciente Y el usuario general está activo */}
+                  {odo?.is_active && !odo?.odontologo_activo && tieneDatosPaciente && (
+                    <span className="rounded bg-blue-100 px-2 py-0.5 text-xs text-blue-700 text-center">
+                      Únicamente paciente
+                    </span>
+                  )}
+                  
+                  {/* Estado del Usuario general (solo mostrar si está inactivo) */}
+                  {!odo?.is_active && (
+                    <span className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-700 text-center">
+                      Usuario desactivado
+                    </span>
+                  )}
+                </div>
               )}
             </div>
           </div>
@@ -831,20 +923,21 @@ export default function OdontologoDetalle() {
           <table className="min-w-full text-sm">
             <thead className="bg-gray-100 text-black font-bold border-b border-black">
               <tr>
-                <th className="px-4 py-3 text-left">Fecha</th>
-                <th className="px-4 py-3 text-left">Hora</th>
-                <th className="px-4 py-3 text-left">Paciente</th>
-                <th className="px-4 py-3 text-left">Cédula</th>
-                <th className="px-4 py-3 text-left">Consultorio</th>
-                <th className="px-4 py-3 text-left">Estado</th>
-                <th className="px-4 py-3 text-left">Acciones</th>
+                <th className="px-4 py-3 text-center">Fecha</th>
+                <th className="px-4 py-3 text-center">Hora</th>
+                <th className="px-4 py-3 text-center">Paciente</th>
+                <th className="px-4 py-3 text-center">Cédula</th>
+                <th className="px-4 py-3 text-center">Consultorio</th>
+                <th className="px-4 py-3 text-center">Estado Cita</th>
+                <th className="px-4 py-3 text-center">Estado Pago</th>
+                <th className="px-4 py-3 text-center">Acción</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
               {loadingCitas ? (
                 <tr>
                   <td
-                    colSpan={7}
+                    colSpan={8}
                     className="px-4 py-6 text-center text-gray-500"
                   >
                     Cargando…
@@ -853,7 +946,7 @@ export default function OdontologoDetalle() {
               ) : currentRows.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={7}
+                    colSpan={8}
                     className="px-4 py-6 text-center text-gray-500"
                   >
                     Sin resultados
@@ -862,20 +955,21 @@ export default function OdontologoDetalle() {
               ) : (
                 currentRows.map((c) => (
                   <tr key={CitaKey(c)} className="hover:bg-gray-50">
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-3 text-center">
                       {formatFechaLocalYMD(c.fecha)}
                     </td>
-                    <td className="px-4 py-3 tabular-nums">
+                    <td className="px-4 py-3 tabular-nums text-center">
                       {horaRango(c.hora_inicio, c.hora_fin) || "—"}
                     </td>
-                    <td className="px-4 py-3">{c.paciente_nombre}</td>
-                    <td className="px-4 py-3">{c.paciente_cedula}</td>
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-3 text-center">{c.paciente_nombre}</td>
+                    <td className="px-4 py-3 text-center">{c.paciente_cedula}</td>
+                    <td className="px-4 py-3 text-center">
                       {c.consultorio ? `Cons. ${c.consultorio.numero}` : "—"}
                     </td>
-                    <td className="px-4 py-3">{estadoPill(c.estado)}</td>
-                    <td className="px-4 py-3">
-                      <AccionesCita id={c.id_cita} />
+                    <td className="px-4 py-3 text-center">{estadoPill(c.estado)}</td>
+                    <td className="px-4 py-3 text-center">{estadoPagoPill(c)}</td>
+                    <td className="px-4 py-3 text-center">
+                      <AccionesCita id={c.id_cita} fecha={c.fecha} />
                     </td>
                   </tr>
                 ))
